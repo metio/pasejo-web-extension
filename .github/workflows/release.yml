@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: The pasejo Authors
+# SPDX-License-Identifier: 0BSD
+
+# Triggered when a `vX.Y.Z` tag is pushed. Computes the version from
+# the tag, rewrites the manifest version fields, builds the distribution
+# archives, lints the Firefox bundle, and creates a GitHub Release with
+# the .xpi + .zip attached so the AMO / Chrome Web Store uploads have a
+# stable place to come from.
+#
+# Unlike pasejo's calendar-based release, the extension uses tag-driven
+# semver. Each tag represents a deliberate, store-submittable build.
+
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Build + release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+
+      - id: version
+        name: Derive version from tag
+        # Strip the leading `v` (`v0.1.0` -> `0.1.0`) because that's the
+        # format `manifest.json` requires: Chrome rejects a leading `v`.
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          for m in manifests/firefox.json manifests/chromium.json; do
+            jq --arg v "$v" '.version = $v' "$m" > "$m.tmp"
+            mv "$m.tmp" "$m"
+          done
+
+      - name: Build extension
+        run: ./package.sh
+
+      - name: Install web-ext
+        run: npm install --no-progress --silent -g web-ext
+
+      - name: Lint Firefox bundle
+        run: web-ext lint --source-dir=dist/firefox
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ steps.version.outputs.version }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/pasejo-firefox.xpi
+            dist/pasejo-chromium.zip
