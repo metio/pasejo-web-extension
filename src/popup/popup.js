@@ -21,15 +21,33 @@ const elements = {
 const ALL_STORES = "__pasejo_all__";
 
 const state = {
-  tabId: null,
   domain: null,
   store: null,
   stores: [],
+  // Set true once `loadStores` has accepted a host's `protocol_version`.
+  // Multi-store fan-out skips the per-call check, so we record the
+  // outcome of the one call that did check.
+  protocolOk: false,
+  // Guard against a double-click on a result row sending two fill
+  // requests. Cleared on completion (success path closes the popup, so
+  // a stale `true` would only block fills the user can never trigger).
+  filling: false,
 };
 
+// Errors get `role="alert"` so screen readers announce them immediately;
+// informational status uses the politer `role="status"` (its implicit
+// aria-live="polite" defers to the user's current activity). Swapping
+// the role on the same element is the simplest way to get both
+// behaviours without two separate live regions.
 function setStatus(text, kind) {
   elements.status.textContent = text ?? "";
-  elements.status.classList.toggle("error", kind === "error");
+  if (kind === "error") {
+    elements.status.classList.add("error");
+    elements.status.setAttribute("role", "alert");
+  } else {
+    elements.status.classList.remove("error");
+    elements.status.setAttribute("role", "status");
+  }
 }
 
 // Firefox's `browser.runtime.sendMessage` is promise-only — calling it
@@ -84,6 +102,7 @@ async function loadStores() {
     );
     return null;
   }
+  state.protocolOk = true;
   return reply.stores ?? [];
 }
 
@@ -95,25 +114,47 @@ function isCompatibleProtocol(version) {
   );
 }
 
-function renderStores(stores) {
+function renderStores(stores, preferred) {
   elements.store.replaceChildren();
   if (stores.length > 1) {
     const all = document.createElement("option");
     all.value = ALL_STORES;
     all.textContent = "All stores";
+    if (preferred === ALL_STORES) {
+      all.selected = true;
+    }
     elements.store.appendChild(all);
   }
   for (const entry of stores) {
     const option = document.createElement("option");
     option.value = entry.name;
     option.textContent = entry.default ? `${entry.name} (default)` : entry.name;
-    if (entry.default) {
+    // The dropdown's initial selection prefers the per-host memory, then
+    // falls back to the config's default-marked store. Picking here
+    // (rather than overriding `.value` after `replaceChildren`) avoids
+    // the visible flash of the default selection that the post-render
+    // assignment used to cause.
+    if (preferred ? entry.name === preferred : entry.default) {
       option.selected = true;
     }
     elements.store.appendChild(option);
   }
   state.stores = stores;
   state.store = elements.store.value || null;
+}
+
+async function pickPreferredStore(stores, hostname) {
+  const remembered = await recallStoreForHost(hostname);
+  if (!remembered) {
+    return null;
+  }
+  if (remembered === ALL_STORES) {
+    // The "All stores" entry only renders when more than one store
+    // exists; falling back to null lets `renderStores` use the
+    // config-default selection in the single-store case.
+    return stores.length > 1 ? ALL_STORES : null;
+  }
+  return stores.some((s) => s.name === remembered) ? remembered : null;
 }
 
 // Per-host store memory. The popup remembers which store the user last
@@ -197,6 +238,17 @@ async function runMultiStoreQuery() {
     setStatus("No stores to search.", "error");
     return;
   }
+  if (!state.protocolOk) {
+    // `loadStores` is the only place that validates `protocol_version`,
+    // and it must have succeeded for the user to see "All stores" in
+    // the dropdown. Belt-and-braces guard so a future refactor can't
+    // route into the multi-store path without going through the gate.
+    setStatus(
+      "Refusing multi-store query: host protocol has not been verified yet.",
+      "error",
+    );
+    return;
+  }
   const attempts = await Promise.all(
     state.stores.map(async (entry) => {
       try {
@@ -252,7 +304,20 @@ function showMatches(matches, skippedCount, skippedNames) {
 function renderMatch(match) {
   const item = document.createElement("li");
   item.title = match.name;
+  // Keyboard accessibility: each row is reachable by Tab and activated
+  // by Enter / Space. Without this the row's `cursor: pointer` lied to
+  // mouse users (no keyboard equivalent existed) and keyboard users
+  // had to Tab to the inner Fill button.
+  item.tabIndex = 0;
+  item.setAttribute("role", "button");
+  item.setAttribute("aria-label", `Fill ${match.name}`);
   item.addEventListener("click", () => fillIntoActiveTab(match));
+  item.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      fillIntoActiveTab(match);
+    }
+  });
 
   const primary = document.createElement("div");
   primary.className = "row-primary";
@@ -306,17 +371,29 @@ function button(label, handler) {
 }
 
 async function fillIntoActiveTab(match) {
-  if (!state.tabId) {
+  // Re-query the active tab at fill time rather than reusing the id
+  // captured in `main()`: if the user opened the popup, switched tabs,
+  // and clicked Fill, the captured id would target the original tab.
+  // Re-querying makes Fill always act on whatever the user can see.
+  const tab = await loadActiveTab();
+  if (!tab) {
     setStatus("No active tab to fill.", "error");
     return;
   }
+  // Double-click guard: clicking the row twice would otherwise send two
+  // fan-outs and race the 600 ms popup close. The flag is cleared in
+  // `finally` so an error on the first attempt doesn't block a retry.
+  if (state.filling) {
+    return;
+  }
+  state.filling = true;
   const payload = {
     type: "fill",
     username: match.username,
     password: match.password,
   };
   try {
-    const reply = await fillAcrossFrames(state.tabId, payload);
+    const reply = await fillAcrossFrames(tab.id, payload);
     if (reply?.ok) {
       setStatus(`Filled ${match.name}.`);
       // Give the user a moment to read the success line before the popup
@@ -334,6 +411,8 @@ async function fillIntoActiveTab(match) {
       `Could not reach the page: ${err.message}. Reload the tab if it was opened before the extension.`,
       "error",
     );
+  } finally {
+    state.filling = false;
   }
 }
 
@@ -381,7 +460,6 @@ async function main() {
     setStatus("No active tab.", "error");
     return;
   }
-  state.tabId = tab.id;
   state.domain = tab.hostname;
   elements.domain.textContent = tab.hostname ?? "(no domain)";
 
@@ -389,16 +467,8 @@ async function main() {
   if (stores === null) {
     return;
   }
-  renderStores(stores);
-  const remembered = await recallStoreForHost(tab.hostname);
-  if (
-    remembered &&
-    (remembered === ALL_STORES ||
-      stores.some((s) => s.name === remembered))
-  ) {
-    elements.store.value = remembered;
-    state.store = remembered;
-  }
+  const preferred = await pickPreferredStore(stores, tab.hostname);
+  renderStores(stores, preferred);
   await runQuery();
 }
 
@@ -408,22 +478,23 @@ elements.store.addEventListener("change", () => {
   rememberStoreForHost(state.domain, state.store);
   runQuery();
 });
+
+// Debounced: a second click while a refresh is already in flight would
+// otherwise race two `list_stores` + `query` rounds. The button stays
+// disabled until both complete, which doubles as user feedback.
 elements.refresh.addEventListener("click", async () => {
-  const stores = await loadStores();
-  if (stores === null) {
-    return;
+  elements.refresh.disabled = true;
+  try {
+    const stores = await loadStores();
+    if (stores === null) {
+      return;
+    }
+    const preferred = await pickPreferredStore(stores, state.domain);
+    renderStores(stores, preferred);
+    await runQuery();
+  } finally {
+    elements.refresh.disabled = false;
   }
-  renderStores(stores);
-  const remembered = await recallStoreForHost(state.domain);
-  if (
-    remembered &&
-    (remembered === ALL_STORES ||
-      stores.some((s) => s.name === remembered))
-  ) {
-    elements.store.value = remembered;
-    state.store = remembered;
-  }
-  await runQuery();
 });
 
 main();

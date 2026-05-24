@@ -153,5 +153,22 @@
     }
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
+    pulse(el);
+  }
+
+  // Brief visual feedback on the filled input so the user can tell at a
+  // glance that a fill happened — the popup closes ~600 ms after a
+  // successful fill, so the page itself has to confirm the change.
+  // `outline` is used rather than `border` or `background` because it
+  // sits outside the box model and can't shift the page layout.
+  function pulse(el) {
+    const previousOutline = el.style.outline;
+    const previousOffset = el.style.outlineOffset;
+    el.style.outline = "2px solid #3a4ba0";
+    el.style.outlineOffset = "0";
+    setTimeout(() => {
+      el.style.outline = previousOutline;
+      el.style.outlineOffset = previousOffset;
+    }, 600);
   }
 })();

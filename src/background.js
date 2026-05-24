@@ -15,6 +15,14 @@ try {
 
 const { NATIVE_HOST, ACTION, api } = globalThis.PASEJO;
 
+// Upper bound on how long we wait for a single host response before
+// giving up. The host's slowest legitimate path is a pull hook that
+// fetches from a remote (git pull, rclone, …); 30 s covers that for any
+// reasonable network round-trip without leaving the popup hanging
+// forever when the host is genuinely stuck (frozen compositor, runaway
+// hook, etc.).
+const NATIVE_TIMEOUT_MS = 30_000;
+
 // One-shot native request that connects, sends, awaits a single reply
 // (or a disconnect), and tears down. Connecting per request keeps the
 // host's lifetime tied to actual user activity — service workers in MV3
@@ -36,6 +44,7 @@ function sendNativeRequest(request) {
         return;
       }
       settled = true;
+      clearTimeout(timer);
       try {
         port.disconnect();
       } catch (_) {
@@ -43,6 +52,15 @@ function sendNativeRequest(request) {
       }
       fn(value);
     };
+
+    const timer = setTimeout(() => {
+      settle(
+        reject,
+        new Error(
+          `pasejo browser host did not respond within ${NATIVE_TIMEOUT_MS / 1000}s`,
+        ),
+      );
+    }, NATIVE_TIMEOUT_MS);
 
     port.onMessage.addListener((message) => settle(resolve, message));
     port.onDisconnect.addListener(() => {
@@ -67,7 +85,7 @@ function sendNativeRequest(request) {
 // `sendResponse` stays usable until we call it.
 api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || typeof message !== "object") {
-    sendResponse({ error: "invalid message" });
+    sendResponse({ ok: false, error: "invalid message" });
     return false;
   }
 
