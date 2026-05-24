@@ -29,6 +29,18 @@ explicit user click, and no credential ever lands in `storage` — the
 extension is purely a relay between the popup, the active tab, and
 `pasejo browser host`.
 
+## Known limitations
+
+* **No clipboard auto-clear.** The CLI clears the clipboard a configurable
+  number of seconds after `pasejo secret show --clip`; the extension does
+  not yet do the equivalent. MV3 service workers can't call `navigator.clipboard.*`
+  directly, so a proper auto-clear needs Chromium's `offscreen` API (which
+  Firefox lacks) — until both ends grow a clean cross-browser path, copied
+  credentials stay in the clipboard until something else overwrites them.
+* **No keyboard shortcut for filling.** Click-only for now.
+* **No per-domain store preference.** The popup's *Store* dropdown selects
+  a store per-popup; the choice is not persisted.
+
 ## Installing the native-messaging host
 
 `pasejo` writes the native-messaging manifest for you:
@@ -50,6 +62,16 @@ disk. The Firefox extension uses the stable add-on id `pasejo@metio.wtf`,
 so `--extension-id` is optional there; Chromium-family browsers compute the
 extension id from the public key of the unpacked load, so it must be passed
 explicitly.
+
+Browsers spawn the host with a stripped environment, so `PASEJO_CONFIG`,
+`PASEJO_DEFAULT_STORE`, and `SSH_AUTH_SOCK` may not be inherited. Pin them
+via `--env`, which bakes `export` lines into the generated wrapper script:
+
+```sh
+pasejo browser install-manifest --browser firefox \
+  --env "PASEJO_DEFAULT_STORE=work" \
+  --env "SSH_AUTH_SOCK=/run/user/1000/keyring/ssh"
+```
 
 ## Loading the extension
 

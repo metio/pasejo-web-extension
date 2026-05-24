@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: The pasejo Authors
 // SPDX-License-Identifier: 0BSD
 
-const { ERROR_COPY, api } = globalThis.PASEJO;
+const { ERROR_COPY, PROTOCOL_MIN, PROTOCOL_MAX, api } = globalThis.PASEJO;
 
 const elements = {
   domain: document.getElementById("domain"),
@@ -65,7 +65,24 @@ async function loadStores() {
   if (reply.error) {
     return renderHostError(reply);
   }
+  if (!isCompatibleProtocol(reply.protocol_version)) {
+    setStatus(
+      `Host speaks protocol ${reply.protocol_version ?? "(unknown)"}, ` +
+        `extension supports ${PROTOCOL_MIN}-${PROTOCOL_MAX}. ` +
+        "Update the pasejo binary or the extension so both ends match.",
+      "error",
+    );
+    return null;
+  }
   return reply.stores ?? [];
+}
+
+function isCompatibleProtocol(version) {
+  return (
+    typeof version === "number" &&
+    version >= PROTOCOL_MIN &&
+    version <= PROTOCOL_MAX
+  );
 }
 
 function renderStores(stores) {
@@ -144,6 +161,9 @@ function renderMatch(match) {
   actions.appendChild(button("Fill", () => fillIntoActiveTab(match)));
   actions.appendChild(button("Copy user", () => copy(match.username)));
   actions.appendChild(button("Copy pw", () => copy(match.password)));
+  if (match.otp) {
+    actions.appendChild(button("Copy OTP", () => copy(match.otp)));
+  }
   item.appendChild(actions);
 
   const secondary = document.createElement("div");
@@ -152,6 +172,12 @@ function renderMatch(match) {
     const user = document.createElement("span");
     user.textContent = match.username;
     secondary.appendChild(user);
+  }
+  if (match.otp) {
+    const otp = document.createElement("span");
+    otp.className = "otp";
+    otp.textContent = `OTP: ${match.otp}`;
+    secondary.appendChild(otp);
   }
   if (match.store) {
     const store = document.createElement("span");
@@ -192,12 +218,13 @@ async function fillIntoActiveTab(match) {
     setStatus("No active tab to fill.", "error");
     return;
   }
+  const payload = {
+    type: "fill",
+    username: match.username,
+    password: match.password,
+  };
   try {
-    const reply = await api.tabs.sendMessage(state.tabId, {
-      type: "fill",
-      username: match.username,
-      password: match.password,
-    });
+    const reply = await fillAcrossFrames(state.tabId, payload);
     if (reply?.ok) {
       setStatus(`Filled ${match.name}.`);
       // Give the user a moment to read the success line before the popup
@@ -205,7 +232,10 @@ async function fillIntoActiveTab(match) {
       // notice when the close races the paint.
       setTimeout(() => window.close(), 600);
     } else {
-      setStatus(reply?.error ?? "Fill returned no usable response.", "error");
+      setStatus(
+        reply?.error ?? "No frame on the page had a fillable password input.",
+        "error",
+      );
     }
   } catch (err) {
     setStatus(
@@ -213,6 +243,44 @@ async function fillIntoActiveTab(match) {
       "error",
     );
   }
+}
+
+// SSO and embedded-checkout flows put the login form in a same-tab
+// iframe. Each frame's content script is independent: only the frame
+// that actually contains the focused password input returns ok:true,
+// the others return ok:false ("No password input found on this page").
+// Fan out the fill to every frame and take the first success.
+async function fillAcrossFrames(tabId, payload) {
+  const frames = await listFrames(tabId);
+  const attempts = frames.map(async (frameId) => {
+    try {
+      const reply = await api.tabs.sendMessage(tabId, payload, { frameId });
+      return reply?.ok ? reply : null;
+    } catch (_) {
+      // Frame may have unloaded between getAllFrames and sendMessage,
+      // or it may not have our content script (e.g. about:blank). Treat
+      // any error as a non-match so the remaining frames still get a
+      // chance.
+      return null;
+    }
+  });
+  const results = await Promise.all(attempts);
+  return results.find((r) => r) ?? { ok: false };
+}
+
+async function listFrames(tabId) {
+  if (!api.webNavigation?.getAllFrames) {
+    return [0];
+  }
+  try {
+    const frames = await api.webNavigation.getAllFrames({ tabId });
+    if (Array.isArray(frames) && frames.length > 0) {
+      return frames.map((f) => f.frameId);
+    }
+  } catch (_) {
+    // Permission missing or tab closed — fall through to top-frame only.
+  }
+  return [0];
 }
 
 async function main() {

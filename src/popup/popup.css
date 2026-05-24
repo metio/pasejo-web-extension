@@ -144,6 +144,11 @@ body {
   color: var(--fg);
 }
 
+.results .otp {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.05em;
+}
+
 .results .actions {
   display: flex;
   gap: 4px;
