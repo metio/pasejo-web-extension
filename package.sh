@@ -14,11 +14,13 @@ DIST="${ROOT}/dist"
 for target in firefox chromium; do
   out="${DIST}/${target}"
   rm -rf "${out}"
-  mkdir -p "${out}"
+  mkdir -p "${out}" "${out}/icons"
   cp -R "${ROOT}/src/." "${out}/"
   cp "${ROOT}/manifests/${target}.json" "${out}/manifest.json"
-  if [ -d "${ROOT}/icons" ]; then
-    cp -R "${ROOT}/icons" "${out}/icons"
-  fi
+  # Only ship the rendered PNGs the manifests reference. The SVG source
+  # and the make-icons.sh helper are kept out of the extension bundle.
+  for png in "${ROOT}/icons"/*.png; do
+    [ -f "${png}" ] && cp "${png}" "${out}/icons/"
+  done
   printf 'built %s\n' "${out}"
 done

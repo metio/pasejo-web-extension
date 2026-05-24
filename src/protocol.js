@@ -23,6 +23,8 @@
       UnknownAction: "unknown_action",
       DecodeError: "decode_error",
       IdentityLocked: "identity_locked",
+      HookFailed: "hook_failed",
+      StoreUnreachable: "store_unreachable",
       NoStoreConfigured: "no_store_configured",
     }),
 
@@ -35,6 +37,10 @@
         "No pasejo store is configured. Run `pasejo store add` first.",
       identity_locked:
         "Could not decrypt the store. Add the age identity to ssh-agent — the host cannot prompt for a passphrase.",
+      hook_failed:
+        "A pasejo pull hook failed before the store could be read. Check the hook command and the network.",
+      store_unreachable:
+        "The store file could not be opened or locked. Check it exists and that you have read permission.",
       decode_error:
         "The host could not decode the request. Update the extension or the pasejo binary.",
     }),

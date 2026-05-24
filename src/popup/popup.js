@@ -22,25 +22,18 @@ function setStatus(text, kind) {
   elements.status.classList.toggle("error", kind === "error");
 }
 
-function sendBackground(message) {
-  return new Promise((resolve, reject) => {
-    api.runtime.sendMessage(message, (reply) => {
-      const err = api.runtime.lastError;
-      if (err) {
-        reject(new Error(err.message));
-        return;
-      }
-      if (!reply) {
-        reject(new Error("empty reply from background"));
-        return;
-      }
-      if (reply.ok) {
-        resolve(reply.response);
-      } else {
-        reject(new Error(reply.error ?? "background error"));
-      }
-    });
-  });
+// Firefox's `browser.runtime.sendMessage` is promise-only — calling it
+// with a callback never invokes the callback, so the popup would hang
+// forever. Both Firefox and Chrome (since v99) return a Promise here.
+async function sendBackground(message) {
+  const reply = await api.runtime.sendMessage(message);
+  if (!reply) {
+    throw new Error("empty reply from background");
+  }
+  if (!reply.ok) {
+    throw new Error(reply.error ?? "background error");
+  }
+  return reply.response;
 }
 
 // Strip user-info, port, and path so the matcher works with what the
@@ -131,6 +124,8 @@ async function runQuery() {
 
 function renderMatch(match) {
   const item = document.createElement("li");
+  item.title = match.name;
+  item.addEventListener("click", () => fillIntoActiveTab(match));
 
   const primary = document.createElement("div");
   primary.className = "row-primary";
@@ -205,7 +200,10 @@ async function fillIntoActiveTab(match) {
     });
     if (reply?.ok) {
       setStatus(`Filled ${match.name}.`);
-      window.close();
+      // Give the user a moment to read the success line before the popup
+      // disappears. Without the delay the status flashes too briefly to
+      // notice when the close races the paint.
+      setTimeout(() => window.close(), 600);
     } else {
       setStatus(reply?.error ?? "Fill returned no usable response.", "error");
     }
@@ -239,6 +237,13 @@ elements.store.addEventListener("change", () => {
   state.store = elements.store.value || null;
   runQuery();
 });
-elements.refresh.addEventListener("click", () => runQuery());
+elements.refresh.addEventListener("click", async () => {
+  const stores = await loadStores();
+  if (stores === null) {
+    return;
+  }
+  renderStores(stores);
+  await runQuery();
+});
 
 main();

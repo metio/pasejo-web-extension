@@ -60,7 +60,10 @@ explicitly.
 * **Firefox** — open `about:debugging#/runtime/this-firefox`, click
   *Load Temporary Add-on*, point it at `dist/firefox/manifest.json`.
 * **Chromium-family** — open `chrome://extensions`, enable Developer mode,
-  click *Load unpacked*, point it at `dist/chromium/`.
+  click *Load unpacked*, point it at `dist/chromium/`. After the extension
+  loads, copy the **ID** the page shows for it (32-character string under
+  the *pasejo* card) — you need it for `--extension-id` when installing
+  the native-messaging manifest below.
 
 Pin the extension to the toolbar so the popup is one click away.
 
@@ -76,6 +79,46 @@ no TTY to read a passphrase from; the popup surfaces this as an
 *identity locked* error. Use ssh-agent as the identity source so the host
 can decrypt without prompting.
 
+## Manual test checklist
+
+There is no automated browser test yet — exercise the full chain manually
+after any change to the extension or to `pasejo browser host`.
+
+**Once-off setup (per browser):**
+
+1. `./package.sh` to build `dist/firefox/` and `dist/chromium/`.
+2. Load the unpacked extension (instructions above) and copy the
+   Chromium-family extension id if applicable.
+3. Run `pasejo browser install-manifest --browser <name> [--extension-id <id>]`
+   and confirm the wrapper script + manifest paths it logs.
+4. Make sure the configured store has at least one identity that the host
+   can decrypt without a passphrase — typically a key loaded into
+   ssh-agent.
+
+**Smoke test (run for both Firefox and Chromium):**
+
+* Open the popup on an HTTPS page whose host matches a stored secret.
+  Expect the matching secret(s) to appear within ~1 s.
+* Switch to a different store in the dropdown. Expect the results list to
+  re-query.
+* Click the "Refresh" button. Expect the dropdown and results list to
+  both re-fetch.
+* Click the row (anywhere outside the buttons). Expect the credentials to
+  fill into the active page, the status to read *Filled …*, and the popup
+  to auto-close ~600 ms later.
+* Click "Copy user" / "Copy pw". Expect the value in the clipboard and the
+  popup to stay open.
+* Open the popup on a page with no matching secret. Expect *No matches for
+  …*, no error.
+* With the store file removed (`mv ~/store ~/store.bak`), open the popup.
+  Expect *The store file could not be opened or locked.* (`store_unreachable`).
+* With a deliberately failing pull hook configured, open the popup. Expect
+  *A pasejo pull hook failed before the store could be read.* (`hook_failed`).
+
+If any step fails or produces an unexpected error kind, capture the
+browser's devtools console for the popup AND the background page before
+reporting — those are the only two places a JS-side error surfaces.
+
 ## Repository layout
 
 ```
@@ -85,6 +128,6 @@ src/                 Source files served verbatim from the extension
   content/fill.js    Content script that fills username + password
   protocol.js        Shared protocol constants
 manifests/           Per-browser manifest.json files
-icons/               Toolbar icons (PNGs to be added)
+icons/               Toolbar icons; edit pasejo.svg, then run make-icons.sh
 package.sh           Copies src/ + the right manifest into dist/<browser>/
 ```

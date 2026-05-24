@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+SPDX-FileCopyrightText: The pasejo Authors
+SPDX-License-Identifier: 0BSD
+
+Master icon source. Render PNGs with `make-icons.sh` after editing.
+Kept deliberately simple (solid fills, no gradients, no path data)
+because the build path uses ImageMagick's built-in MSVG parser on
+systems where rsvg-convert is not installed, and MSVG only handles
+a basic subset of SVG.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect x="0" y="0" width="128" height="128" rx="24" ry="24" fill="#3a4ba0"/>
+  <text x="64" y="64"
+        font-family="DejaVu Sans, Nimbus Sans, sans-serif"
+        font-size="88"
+        font-weight="bold"
+        text-anchor="middle"
+        dominant-baseline="central"
+        fill="#ffffff">p</text>
+</svg>
