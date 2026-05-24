@@ -23,6 +23,62 @@ const { NATIVE_HOST, ACTION, api } = globalThis.PASEJO;
 // hook, etc.).
 const NATIVE_TIMEOUT_MS = 30_000;
 
+// Defensive bounds on the structure of host responses. The host is
+// trusted (it's our own binary on the user's machine) but a buggy
+// build, a corrupted store, or a host-binary version skew could still
+// produce values that would freeze the popup if rendered as-is. These
+// limits are generous compared to any plausible legitimate value:
+// passwords/passphrases top out well below 8 KB, store rosters are at
+// most a handful of entries, and the protocol is shallow. The string
+// limit is measured in UTF-16 code units (what `String.prototype.length`
+// returns), which slightly under-counts UTF-8 byte length — a few KB
+// of slack on top of an already-generous 64K cap.
+const MAX_STRING_LEN = 64 * 1024;
+const MAX_ARRAY_LEN = 10_000;
+const MAX_OBJECT_KEYS = 1024;
+const MAX_DEPTH = 6;
+
+/// Walks the host's reply enforcing the limits above. Throws on
+/// violation so `sendNativeRequest`'s `.catch` branch reports it as a
+/// transport error the popup can render. Cheaper than a JSON-schema
+/// validator and tight enough for our flat protocol.
+function validateResponseShape(value, depth) {
+  if (depth > MAX_DEPTH) {
+    throw new Error(`host response nests deeper than ${MAX_DEPTH} levels`);
+  }
+  if (typeof value === "string") {
+    if (value.length > MAX_STRING_LEN) {
+      throw new Error(
+        `host response contains a string longer than ${MAX_STRING_LEN} code units`,
+      );
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > MAX_ARRAY_LEN) {
+      throw new Error(
+        `host response contains an array longer than ${MAX_ARRAY_LEN} entries`,
+      );
+    }
+    for (const item of value) {
+      validateResponseShape(item, depth + 1);
+    }
+    return;
+  }
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value);
+    if (keys.length > MAX_OBJECT_KEYS) {
+      throw new Error(
+        `host response contains an object with more than ${MAX_OBJECT_KEYS} keys`,
+      );
+    }
+    for (const key of keys) {
+      validateResponseShape(value[key], depth + 1);
+    }
+  }
+  // Numbers, booleans, null, undefined: nothing to bound.
+}
+
 // One-shot native request that connects, sends, awaits a single reply
 // (or a disconnect), and tears down. Connecting per request keeps the
 // host's lifetime tied to actual user activity — service workers in MV3
@@ -62,7 +118,15 @@ function sendNativeRequest(request) {
       );
     }, NATIVE_TIMEOUT_MS);
 
-    port.onMessage.addListener((message) => settle(resolve, message));
+    port.onMessage.addListener((message) => {
+      try {
+        validateResponseShape(message, 0);
+      } catch (err) {
+        settle(reject, err);
+        return;
+      }
+      settle(resolve, message);
+    });
     port.onDisconnect.addListener(() => {
       const err = api.runtime.lastError;
       settle(

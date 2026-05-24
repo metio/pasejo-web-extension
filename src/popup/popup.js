@@ -29,30 +29,44 @@ const state = {
   // outcome of the one call that did check.
   protocolOk: false,
   // Guard against a double-click on a result row sending two fill
-  // requests. Cleared on completion (success path closes the popup, so
-  // a stale `true` would only block fills the user can never trigger).
+  // requests. Cleared on failure paths; the success path leaves it
+  // `true` until the popup closes itself.
   filling: false,
+  // Guard against a rapid second Refresh click sneaking in before
+  // `disabled = true` takes effect on the in-flight click. A queued
+  // event whose dispatch had already begun isn't suppressed by the
+  // disabled property.
+  refreshing: false,
 };
 
-// Errors get `role="alert"` so screen readers announce them immediately;
-// informational status uses the politer `role="status"` (its implicit
-// aria-live="polite" defers to the user's current activity). Swapping
-// the role on the same element is the simplest way to get both
-// behaviours without two separate live regions.
+// Errors get `role="alert"` + `aria-live="assertive"` so screen readers
+// announce them immediately; informational status uses the politer
+// `role="status"` + `aria-live="polite"` (defers to current activity).
+// Both attributes are set explicitly: an inherited `aria-live="polite"`
+// from the HTML would otherwise override the `role="alert"` implicit
+// assertiveness and downgrade error announcements to polite.
 function setStatus(text, kind) {
   elements.status.textContent = text ?? "";
   if (kind === "error") {
     elements.status.classList.add("error");
     elements.status.setAttribute("role", "alert");
+    elements.status.setAttribute("aria-live", "assertive");
   } else {
     elements.status.classList.remove("error");
     elements.status.setAttribute("role", "status");
+    elements.status.setAttribute("aria-live", "polite");
   }
 }
 
 // Firefox's `browser.runtime.sendMessage` is promise-only — calling it
 // with a callback never invokes the callback, so the popup would hang
 // forever. Both Firefox and Chrome (since v99) return a Promise here.
+//
+// The two response-shape checks defend the rest of the popup against a
+// background/host that breaks the wire contract: a `null` `response`
+// would crash callers that do `reply.error` (TypeError on property
+// access), and a primitive `response` would silently mis-route as a
+// "no error" success.
 async function sendBackground(message) {
   const reply = await api.runtime.sendMessage(message);
   if (!reply) {
@@ -60,6 +74,9 @@ async function sendBackground(message) {
   }
   if (!reply.ok) {
     throw new Error(reply.error ?? "background error");
+  }
+  if (typeof reply.response !== "object" || reply.response === null) {
+    throw new Error("malformed response from host (not an object)");
   }
   return reply.response;
 }
@@ -102,6 +119,14 @@ async function loadStores() {
     );
     return null;
   }
+  // `validateResponseShape` in background.js only checks individual
+  // string / array / object sizes — it doesn't constrain field types.
+  // Guard here so a host that sent e.g. `{stores: "broken"}` doesn't
+  // crash `pickPreferredStore` with a TypeError on `.some`.
+  if (reply.stores !== undefined && !Array.isArray(reply.stores)) {
+    setStatus("Malformed host response: `stores` is not an array.", "error");
+    return null;
+  }
   state.protocolOk = true;
   return reply.stores ?? [];
 }
@@ -129,6 +154,10 @@ function renderStores(stores, preferred) {
     const option = document.createElement("option");
     option.value = entry.name;
     option.textContent = entry.default ? `${entry.name} (default)` : entry.name;
+    // `<option title>` isn't honoured by every browser (Firefox renders
+    // it on hover; Chrome may not) but where it works it lets the user
+    // see the full name of a long store that the dropdown truncates.
+    option.title = entry.name;
     // The dropdown's initial selection prefers the per-host memory, then
     // falls back to the config's default-marked store. Picking here
     // (rather than overriding `.value` after `replaceChildren`) avoids
@@ -208,29 +237,45 @@ async function runQuery() {
     setStatus("No domain for the active tab — nothing to search.");
     return;
   }
-  setStatus(`Searching for ${state.domain}…`);
+  // Defer the "Searching for X…" message so fast hosts don't flash it
+  // on screen for a few frames before the results overwrite it. Slow
+  // hosts (>250 ms) still get user feedback.
+  const searchingTimer = setTimeout(() => {
+    setStatus(`Searching for ${state.domain}…`);
+  }, 250);
 
-  if (state.store === ALL_STORES) {
-    await runMultiStoreQuery();
-    return;
-  }
-
-  let reply;
   try {
-    reply = await sendBackground({
-      type: "query",
-      domain: state.domain,
-      store: state.store,
-    });
-  } catch (err) {
-    setStatus(`Could not reach the host: ${err.message}`, "error");
-    return;
+    if (state.store === ALL_STORES) {
+      await runMultiStoreQuery();
+      return;
+    }
+
+    let reply;
+    try {
+      reply = await sendBackground({
+        type: "query",
+        domain: state.domain,
+        store: state.store,
+      });
+    } catch (err) {
+      setStatus(`Could not reach the host: ${err.message}`, "error");
+      return;
+    }
+    if (reply.error) {
+      renderHostError(reply);
+      return;
+    }
+    if (reply.results !== undefined && !Array.isArray(reply.results)) {
+      setStatus(
+        "Malformed host response: `results` is not an array.",
+        "error",
+      );
+      return;
+    }
+    showMatches(reply.results ?? [], 0);
+  } finally {
+    clearTimeout(searchingTimer);
   }
-  if (reply.error) {
-    renderHostError(reply);
-    return;
-  }
-  showMatches(reply.results ?? [], 0);
 }
 
 async function runMultiStoreQuery() {
@@ -257,10 +302,10 @@ async function runMultiStoreQuery() {
           domain: state.domain,
           store: entry.name,
         });
-        if (reply.error) {
+        if (reply.error || !Array.isArray(reply.results)) {
           return { name: entry.name, results: [], skipped: true };
         }
-        return { name: entry.name, results: reply.results ?? [], skipped: false };
+        return { name: entry.name, results: reply.results, skipped: false };
       } catch (_) {
         return { name: entry.name, results: [], skipped: true };
       }
@@ -371,6 +416,14 @@ function button(label, handler) {
 }
 
 async function fillIntoActiveTab(match) {
+  // Double-click guard: clicking the row twice would otherwise send two
+  // fan-outs and race the 600 ms popup close. The flag is set BEFORE
+  // any async work so a queued second click bails immediately, not
+  // after both have already started a tab query.
+  if (state.filling) {
+    return;
+  }
+  state.filling = true;
   // Re-query the active tab at fill time rather than reusing the id
   // captured in `main()`: if the user opened the popup, switched tabs,
   // and clicked Fill, the captured id would target the original tab.
@@ -378,15 +431,9 @@ async function fillIntoActiveTab(match) {
   const tab = await loadActiveTab();
   if (!tab) {
     setStatus("No active tab to fill.", "error");
+    state.filling = false;
     return;
   }
-  // Double-click guard: clicking the row twice would otherwise send two
-  // fan-outs and race the 600 ms popup close. The flag is cleared in
-  // `finally` so an error on the first attempt doesn't block a retry.
-  if (state.filling) {
-    return;
-  }
-  state.filling = true;
   const payload = {
     type: "fill",
     username: match.username,
@@ -395,25 +442,43 @@ async function fillIntoActiveTab(match) {
   try {
     const reply = await fillAcrossFrames(tab.id, payload);
     if (reply?.ok) {
-      setStatus(`Filled ${match.name}.`);
+      // Partial fill: the matching frame had a username field but no
+      // password field (typical multi-step login email page). Tell the
+      // user explicitly so they don't expect the password fill to have
+      // happened — they need to reopen the popup once the password
+      // page loads.
+      const partial =
+        reply.filled?.password === false && reply.filled?.username === true;
+      setStatus(
+        partial
+          ? `Filled username for ${match.name} (no password field on this page).`
+          : `Filled ${match.name}.`,
+      );
       // Give the user a moment to read the success line before the popup
       // disappears. Without the delay the status flashes too briefly to
-      // notice when the close races the paint.
-      setTimeout(() => window.close(), 600);
-    } else {
-      setStatus(
-        reply?.error ?? "No frame on the page had a fillable password input.",
-        "error",
-      );
+      // notice when the close races the paint. Partial fills get a
+      // longer pause because the message is longer and the user needs
+      // to read the next-step instruction.
+      //
+      // Note: `state.filling` deliberately stays `true` here. The popup
+      // is about to close, and clearing the flag would re-open the
+      // double-click window for the brief interval before
+      // `window.close()` fires.
+      setTimeout(() => window.close(), partial ? 1500 : 600);
+      return;
     }
+    setStatus(
+      reply?.error ?? "No frame on the page had a fillable password input.",
+      "error",
+    );
   } catch (err) {
     setStatus(
       `Could not reach the page: ${err.message}. Reload the tab if it was opened before the extension.`,
       "error",
     );
-  } finally {
-    state.filling = false;
   }
+  // Failure path: re-enable so the user can try a different match.
+  state.filling = false;
 }
 
 // SSO and embedded-checkout flows put the login form in a same-tab
@@ -480,9 +545,15 @@ elements.store.addEventListener("change", () => {
 });
 
 // Debounced: a second click while a refresh is already in flight would
-// otherwise race two `list_stores` + `query` rounds. The button stays
-// disabled until both complete, which doubles as user feedback.
+// otherwise race two `list_stores` + `query` rounds. The `refreshing`
+// flag catches any click that the browser dispatched before the
+// `disabled = true` could take effect (rapid double-click); the
+// `disabled` property doubles as visual feedback.
 elements.refresh.addEventListener("click", async () => {
+  if (state.refreshing) {
+    return;
+  }
+  state.refreshing = true;
   elements.refresh.disabled = true;
   try {
     const stores = await loadStores();
@@ -493,6 +564,7 @@ elements.refresh.addEventListener("click", async () => {
     renderStores(stores, preferred);
     await runQuery();
   } finally {
+    state.refreshing = false;
     elements.refresh.disabled = false;
   }
 });

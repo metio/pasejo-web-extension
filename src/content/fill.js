@@ -27,6 +27,20 @@
   function fill(username, password) {
     const passwordInput = findPasswordInput();
     if (!passwordInput) {
+      // Multi-step login pages (email page → password page) have no
+      // password input on the email step. Fall back to a username-only
+      // fill so the popup can still help the user past the first step,
+      // and report `password: false` so the popup can tell them to
+      // reopen on the next page for the password fill.
+      if (username) {
+        const usernameInput = findStandaloneUsernameInput();
+        if (usernameInput) {
+          assignInput(usernameInput, username);
+          return {
+            filled: { username: true, password: false },
+          };
+        }
+      }
       throw new Error("No password input found on this page");
     }
     const usernameInput = findUsernameInputFor(passwordInput);
@@ -52,12 +66,14 @@
     if (candidates.length === 0) {
       return null;
     }
-    // Prefer the currently focused field; otherwise the first visible
-    // password input in document order.
+    // Prefer the currently focused field. Otherwise rank by viewport
+    // visibility so a hidden-deep-in-the-page "change password" form
+    // doesn't win over a visible login form sitting above the fold.
     const focused = document.activeElement;
     if (focused && candidates.includes(focused)) {
       return focused;
     }
+    candidates.sort((a, b) => visibilityScore(b) - visibilityScore(a));
     return candidates[0];
   }
 
@@ -85,6 +101,44 @@
       return before[before.length - 1];
     }
     return candidates[0];
+  }
+
+  // Standalone username search for pages with no password input (the
+  // first step of a multi-step login). Same focused → viewport-visible
+  // → first-in-document ranking as the password search.
+  function findStandaloneUsernameInput() {
+    const candidates = Array.from(document.querySelectorAll("input")).filter(
+      (el) => isInteractable(el) && looksLikeUsername(el),
+    );
+    if (candidates.length === 0) {
+      return null;
+    }
+    const focused = document.activeElement;
+    if (focused && candidates.includes(focused)) {
+      return focused;
+    }
+    candidates.sort((a, b) => visibilityScore(b) - visibilityScore(a));
+    return candidates[0];
+  }
+
+  // Fraction of the element's bounding box that lies inside the
+  // viewport, in `[0, 1]`. Off-screen elements score 0; a fully
+  // on-screen element scores ~1. Used to disambiguate between multiple
+  // candidate inputs on the same page.
+  function visibilityScore(el) {
+    const rect = el.getBoundingClientRect();
+    const viewportH = window.innerHeight || document.documentElement.clientHeight;
+    const viewportW = window.innerWidth || document.documentElement.clientWidth;
+    const visibleH = Math.max(
+      0,
+      Math.min(rect.bottom, viewportH) - Math.max(rect.top, 0),
+    );
+    const visibleW = Math.max(
+      0,
+      Math.min(rect.right, viewportW) - Math.max(rect.left, 0),
+    );
+    const elementArea = Math.max(1, rect.height * rect.width);
+    return (visibleH * visibleW) / elementArea;
   }
 
   const USERNAME_HINTS = [
