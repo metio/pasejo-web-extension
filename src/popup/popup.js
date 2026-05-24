@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: The pasejo Authors
 // SPDX-License-Identifier: 0BSD
 
-const { COPY_WHAT, ERROR_COPY, ERROR_KIND, PROTOCOL_MIN, PROTOCOL_MAX, api } =
-  globalThis.PASEJO;
+const { ERROR_COPY, PROTOCOL_MIN, PROTOCOL_MAX, api } = globalThis.PASEJO;
 
 const elements = {
   domain: document.getElementById("domain"),
@@ -270,21 +269,6 @@ function renderMatch(match) {
   const actions = document.createElement("div");
   actions.className = "actions";
   actions.appendChild(button("Fill", () => fillIntoActiveTab(match)));
-  actions.appendChild(
-    button("Copy user", () =>
-      copyField(match, COPY_WHAT.Username, match.username),
-    ),
-  );
-  actions.appendChild(
-    button("Copy pw", () =>
-      copyField(match, COPY_WHAT.Password, match.password),
-    ),
-  );
-  if (match.otp) {
-    actions.appendChild(
-      button("Copy OTP", () => copyField(match, COPY_WHAT.Otp, match.otp)),
-    );
-  }
   item.appendChild(actions);
 
   const secondary = document.createElement("div");
@@ -319,52 +303,6 @@ function button(label, handler) {
     handler();
   });
   return btn;
-}
-
-// Route the copy through the native host so pasejo's clipboard pipeline
-// (auto-clear after the configured timeout, optional desktop notification,
-// comparison before clearing so the user's later copy isn't wiped) runs
-// the same way it does for the CLI. When the host reports it can't reach
-// the clipboard at all (no display server, locked-down Wayland compositor),
-// fall back to navigator.clipboard.writeText so the user still gets the
-// value on the clipboard — just without the auto-clear.
-async function copyField(match, what, browserFallbackValue) {
-  let reply;
-  try {
-    reply = await sendBackground({
-      type: "copy",
-      store: match.store,
-      path: match.name,
-      what,
-    });
-  } catch (err) {
-    setStatus(`Could not reach the host: ${err.message}`, "error");
-    return;
-  }
-  if (reply.error) {
-    if (reply.error === ERROR_KIND.ClipboardUnavailable && browserFallbackValue) {
-      await fallbackToBrowserClipboard(browserFallbackValue, reply);
-      return;
-    }
-    renderHostError(reply);
-    return;
-  }
-  const seconds = reply.duration_seconds ?? 0;
-  setStatus(
-    seconds > 0
-      ? `Copied — clearing in ${seconds}s.`
-      : "Copied.",
-  );
-}
-
-async function fallbackToBrowserClipboard(value, hostReply) {
-  try {
-    await navigator.clipboard.writeText(value);
-    const hint = hostReply.hint ? ` (${hostReply.hint})` : "";
-    setStatus(`Copied (no auto-clear).${hint}`);
-  } catch (err) {
-    setStatus(`Clipboard write failed: ${err.message}`, "error");
-  }
 }
 
 async function fillIntoActiveTab(match) {

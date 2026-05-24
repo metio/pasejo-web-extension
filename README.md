@@ -29,17 +29,19 @@ explicit user click, and no credential ever lands in `storage` — the
 extension is purely a relay between the popup, the active tab, and
 `pasejo browser host`.
 
-## Clipboard handling
+## OTPs and the clipboard
 
-The "Copy user / Copy pw / Copy OTP" buttons route through `pasejo browser host`
-so the same clipboard pipeline the CLI uses runs in both contexts: the value
-is placed on the system clipboard, a configurable timeout (`clipboard_timeout`)
-later the clipboard is cleared if it still contains the value we wrote, and
-a desktop notification reports the outcome when `clipboard_notify` is true.
-If pasejo can't reach the system clipboard at all — typically a missing
-`$DISPLAY` / `$WAYLAND_DISPLAY` in the browser-spawned environment — the popup
-falls back to `navigator.clipboard.writeText` so the value still lands in the
-clipboard, just without the auto-clear; the status line says so.
+The popup shows the current TOTP code for any matching secret as read-only
+text under the row — copy it manually or just type it into the 2FA field
+on the site. The popup deliberately does **not** offer a "Copy to clipboard"
+action; for that, reach for `pasejo otp show --clip` or
+`pasejo secret show --clip` from a terminal, which runs the CLI's full
+clipboard pipeline (auto-clear after `clipboard_timeout`, desktop
+notification, Ctrl-C interrupt). The browser context has no equivalent to
+that pipeline without significant divergence between Chromium and Firefox,
+so we keep clipboard handling on the CLI side where it already works
+properly. *Fill* is the only credential-extraction action exposed by the
+extension.
 
 ## Keyboard shortcut
 
@@ -122,7 +124,11 @@ Pin the extension to the toolbar so the popup is one click away.
 The host follows the same store-resolution chain as every other `pasejo`
 command: `PASEJO_DEFAULT_STORE` env → config `default_store` → first store
 in the configuration. To target a non-default store from the popup, choose
-it from the *Store* dropdown — the choice is per-session and not persisted.
+it from the *Store* dropdown — the popup remembers the last picked store
+per hostname (in `chrome.storage.local`) and restores it next time you
+open the popup on the same page. With more than one store configured, an
+*All stores* entry appears at the top of the dropdown that fans out the
+query across every store and merges the results.
 
 Encrypted age identities cannot be unlocked from the host because there is
 no TTY to read a passphrase from; the popup surfaces this as an
@@ -153,11 +159,11 @@ after any change to the extension or to `pasejo browser host`.
   re-query.
 * Click the "Refresh" button. Expect the dropdown and results list to
   both re-fetch.
-* Click the row (anywhere outside the buttons). Expect the credentials to
-  fill into the active page, the status to read *Filled …*, and the popup
+* Click the row (anywhere outside the Fill button). Expect the credentials
+  to fill into the active page, the status to read *Filled …*, and the popup
   to auto-close ~600 ms later.
-* Click "Copy user" / "Copy pw". Expect the value in the clipboard and the
-  popup to stay open.
+* For a secret with an OTP, expect *OTP: 123456* to appear in the row's
+  secondary line and update when you reopen the popup after 30 s.
 * Open the popup on a page with no matching secret. Expect *No matches for
   …*, no error.
 * With the store file removed (`mv ~/store ~/store.bak`), open the popup.
