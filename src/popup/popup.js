@@ -100,6 +100,11 @@ async function loadActiveTab() {
 }
 
 async function loadStores() {
+  // The gate is reset at the start of every call: a Refresh against a
+  // host that now reports an incompatible protocol must invalidate the
+  // multi-store path, even if a previous `loadStores` (in the same
+  // popup lifetime) had accepted it.
+  state.protocolOk = false;
   let reply;
   try {
     reply = await sendBackground({ type: "list_stores" });
@@ -358,6 +363,17 @@ function renderMatch(match) {
   item.setAttribute("aria-label", `Fill ${match.name}`);
   item.addEventListener("click", () => fillIntoActiveTab(match));
   item.addEventListener("keydown", (event) => {
+    // Pressing Enter/Space on the inner Fill button generates a
+    // keydown that bubbles up to this listener with `target` set to
+    // the button, not the row. Without this `target === item` filter
+    // the activation would fire `fillIntoActiveTab` twice (once via
+    // the button's click handler, once via this keydown handler) —
+    // the popup's `state.filling` guard catches the second call but
+    // each invocation still costs a `loadActiveTab` and a wasted
+    // `tabs.sendMessage` fan-out.
+    if (event.target !== item) {
+      return;
+    }
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       fillIntoActiveTab(match);
