@@ -1,0 +1,164 @@
+/*
+ * SPDX-FileCopyrightText: The pasejo Authors
+ * SPDX-License-Identifier: 0BSD
+ */
+
+:root {
+  color-scheme: light dark;
+  --bg: Canvas;
+  --fg: CanvasText;
+  --muted: GrayText;
+  --accent: AccentColor;
+  --accent-fg: AccentColorText;
+  --border: color-mix(in srgb, CanvasText 25%, transparent);
+  --row-hover: color-mix(in srgb, AccentColor 12%, transparent);
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--fg);
+  min-width: 340px;
+  max-width: 420px;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.title {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.domain {
+  color: var(--muted);
+  font-size: 12px;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.controls label {
+  color: var(--muted);
+}
+
+.controls select,
+.controls button {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+
+.controls button {
+  cursor: pointer;
+}
+
+.controls button:hover {
+  background: var(--row-hover);
+}
+
+.status {
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  min-height: 18px;
+}
+
+.status.error {
+  color: color-mix(in srgb, red 70%, CanvasText 30%);
+}
+
+.results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.results li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  gap: 2px 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.results li:hover {
+  background: var(--row-hover);
+}
+
+.results .row-primary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.results .row-secondary {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+  display: flex;
+  gap: 6px;
+}
+
+.results .name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.results .badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--fg);
+}
+
+.results .actions {
+  display: flex;
+  gap: 4px;
+}
+
+.results .actions button {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.results .actions button:hover {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}

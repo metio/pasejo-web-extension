@@ -1,0 +1,31 @@
+<!--
+SPDX-FileCopyrightText: The pasejo Authors
+SPDX-License-Identifier: 0BSD
+-->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>pasejo</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="header">
+      <span class="title">pasejo</span>
+      <span id="domain" class="domain" aria-live="polite"></span>
+    </header>
+
+    <section class="controls">
+      <label for="store">Store</label>
+      <select id="store" aria-label="Store"></select>
+      <button id="refresh" type="button" title="Re-query the host">Refresh</button>
+    </section>
+
+    <section id="status" class="status" role="status" aria-live="polite"></section>
+
+    <ul id="results" class="results"></ul>
+
+    <script src="../protocol.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "pasejo",
+  "version": "0.1.0",
+  "description": "Fill credentials from an age-encrypted pasejo store",
+  "author": "The pasejo Authors",
+  "homepage_url": "https://github.com/metio/pasejo",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "pasejo@metio.wtf",
+      "strict_min_version": "115.0"
+    }
+  },
+  "background": {
+    "scripts": ["protocol.js", "background.js"]
+  },
+  "action": {
+    "default_title": "pasejo",
+    "default_popup": "popup/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/fill.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "permissions": [
+    "activeTab",
+    "nativeMessaging",
+    "scripting",
+    "tabs"
+  ]
+}
