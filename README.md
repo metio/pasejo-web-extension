@@ -29,14 +29,20 @@ explicit user click, and no credential ever lands in `storage` — the
 extension is purely a relay between the popup, the active tab, and
 `pasejo browser host`.
 
+## Clipboard handling
+
+The "Copy user / Copy pw / Copy OTP" buttons route through `pasejo browser host`
+so the same clipboard pipeline the CLI uses runs in both contexts: the value
+is placed on the system clipboard, a configurable timeout (`clipboard_timeout`)
+later the clipboard is cleared if it still contains the value we wrote, and
+a desktop notification reports the outcome when `clipboard_notify` is true.
+If pasejo can't reach the system clipboard at all — typically a missing
+`$DISPLAY` / `$WAYLAND_DISPLAY` in the browser-spawned environment — the popup
+falls back to `navigator.clipboard.writeText` so the value still lands in the
+clipboard, just without the auto-clear; the status line says so.
+
 ## Known limitations
 
-* **No clipboard auto-clear.** The CLI clears the clipboard a configurable
-  number of seconds after `pasejo secret show --clip`; the extension does
-  not yet do the equivalent. MV3 service workers can't call `navigator.clipboard.*`
-  directly, so a proper auto-clear needs Chromium's `offscreen` API (which
-  Firefox lacks) — until both ends grow a clean cross-browser path, copied
-  credentials stay in the clipboard until something else overwrites them.
 * **No keyboard shortcut for filling.** Click-only for now.
 * **No per-domain store preference.** The popup's *Store* dropdown selects
   a store per-popup; the choice is not persisted.

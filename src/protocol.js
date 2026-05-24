@@ -21,6 +21,15 @@
     ACTION: Object.freeze({
       Query: "query",
       ListStores: "list_stores",
+      Copy: "copy",
+    }),
+
+    // `what` values for a Copy request. Match the `CopyWhat` enum in
+    // src/browser/protocol.rs.
+    COPY_WHAT: Object.freeze({
+      Password: "password",
+      Username: "username",
+      Otp: "otp",
     }),
 
     // Error kinds the host can return. Mirrors `ErrorKind` in
@@ -33,6 +42,9 @@
       HookFailed: "hook_failed",
       StoreUnreachable: "store_unreachable",
       NoStoreConfigured: "no_store_configured",
+      ClipboardUnavailable: "clipboard_unavailable",
+      SecretNotFound: "secret_not_found",
+      FieldNotFound: "field_not_found",
     }),
 
     // Popup copy per error kind. Anything outside this map falls back to
@@ -50,6 +62,12 @@
         "The store file could not be opened or locked. Check it exists and that you have read permission.",
       decode_error:
         "The host could not decode the request. Update the extension or the pasejo binary.",
+      clipboard_unavailable:
+        "pasejo could not reach the system clipboard — falling back to the browser's clipboard (no auto-clear).",
+      secret_not_found:
+        "That secret no longer exists in the store. Refresh and try again.",
+      field_not_found:
+        "The secret does not have that field. Try a different action.",
     }),
 
     // Cross-browser binding for the WebExtensions API. Firefox exposes

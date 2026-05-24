@@ -14,6 +14,7 @@ try {
 }
 
 const { NATIVE_HOST, ACTION, api } = globalThis.PASEJO;
+const { Copy: COPY_ACTION } = ACTION;
 
 // One-shot native request that connects, sends, awaits a single reply
 // (or a disconnect), and tears down. Connecting per request keeps the
@@ -86,6 +87,19 @@ api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
     case "list_stores": {
       sendNativeRequest({ action: ACTION.ListStores })
+        .then((response) => sendResponse({ ok: true, response }))
+        .catch((err) =>
+          sendResponse({ ok: false, error: err?.message ?? String(err) }),
+        );
+      return true;
+    }
+    case "copy": {
+      sendNativeRequest({
+        action: COPY_ACTION,
+        store: message.store ?? null,
+        path: message.path,
+        what: message.what,
+      })
         .then((response) => sendResponse({ ok: true, response }))
         .catch((err) =>
           sendResponse({ ok: false, error: err?.message ?? String(err) }),
