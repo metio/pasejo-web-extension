@@ -498,26 +498,35 @@ async function fillIntoActiveTab(match) {
 }
 
 // SSO and embedded-checkout flows put the login form in a same-tab
-// iframe. Each frame's content script is independent: only the frame
-// that actually contains the focused password input returns ok:true,
-// the others return ok:false ("No password input found on this page").
-// Fan out the fill to every frame and take the first success.
+// iframe. We walk the frames in tree order (top frame first, then
+// children) and stop at the first one that reports a successful fill —
+// parallel `Promise.all` here would dispatch to every frame and fill
+// every form that has a password input, including unrelated change-
+// password iframes and (worse) any malicious iframe injected into the
+// page. Sequential top-first contains the credential exposure to one
+// frame per click.
+//
+// Residual risk: if the top frame has no password input but two
+// iframes do, the first iframe in tree order gets filled regardless of
+// whether the user actually meant that one. A focus-aware probe
+// (`document.hasFocus()` per frame, prefer focused frame) would close
+// that gap; deferred until we have evidence anyone hits it in
+// practice.
 async function fillAcrossFrames(tabId, payload) {
   const frames = await listFrames(tabId);
-  const attempts = frames.map(async (frameId) => {
+  for (const frameId of frames) {
     try {
       const reply = await api.tabs.sendMessage(tabId, payload, { frameId });
-      return reply?.ok ? reply : null;
+      if (reply?.ok) {
+        return reply;
+      }
     } catch (_) {
       // Frame may have unloaded between getAllFrames and sendMessage,
-      // or it may not have our content script (e.g. about:blank). Treat
-      // any error as a non-match so the remaining frames still get a
-      // chance.
-      return null;
+      // or it may not have our content script (e.g. about:blank).
+      // Skip and try the next.
     }
-  });
-  const results = await Promise.all(attempts);
-  return results.find((r) => r) ?? { ok: false };
+  }
+  return { ok: false };
 }
 
 async function listFrames(tabId) {
