@@ -12,10 +12,20 @@ const elements = {
   results: document.getElementById("results"),
 };
 
+// Sentinel value the Store dropdown uses for "fan out the query across
+// every configured store and merge the results". The host is never sent
+// this string — the popup interprets it locally and fans out to one
+// `query` per real store name. Picked to be implausible as a user-chosen
+// store name; we additionally guard `renderStores` so an actual store
+// named `__pasejo_all__` would still appear under its own row even if
+// the user managed to register it.
+const ALL_STORES = "__pasejo_all__";
+
 const state = {
   tabId: null,
   domain: null,
   store: null,
+  stores: [],
 };
 
 function setStatus(text, kind) {
@@ -88,6 +98,12 @@ function isCompatibleProtocol(version) {
 
 function renderStores(stores) {
   elements.store.replaceChildren();
+  if (stores.length > 1) {
+    const all = document.createElement("option");
+    all.value = ALL_STORES;
+    all.textContent = "All stores";
+    elements.store.appendChild(all);
+  }
   for (const entry of stores) {
     const option = document.createElement("option");
     option.value = entry.name;
@@ -97,7 +113,46 @@ function renderStores(stores) {
     }
     elements.store.appendChild(option);
   }
+  state.stores = stores;
   state.store = elements.store.value || null;
+}
+
+// Per-host store memory. The popup remembers which store the user last
+// picked for the active page's hostname so they don't have to re-pick
+// every visit. Keyed by raw hostname (not registrable domain) because
+// the popup doesn't bundle a public-suffix list; `mail.example.com` and
+// `www.example.com` therefore have independent memories, which is fine
+// for v1 and matches what most users expect anyway.
+const STORE_MEMORY_PREFIX = "store-for-host:";
+
+async function rememberStoreForHost(hostname, storeName) {
+  if (!hostname || !api.storage?.local) {
+    return;
+  }
+  const key = STORE_MEMORY_PREFIX + hostname;
+  try {
+    if (storeName) {
+      await api.storage.local.set({ [key]: storeName });
+    } else {
+      await api.storage.local.remove(key);
+    }
+  } catch (_) {
+    // Storage write failures are non-fatal — the user just doesn't get
+    // the per-host memory until storage works again.
+  }
+}
+
+async function recallStoreForHost(hostname) {
+  if (!hostname || !api.storage?.local) {
+    return null;
+  }
+  const key = STORE_MEMORY_PREFIX + hostname;
+  try {
+    const result = await api.storage.local.get(key);
+    return result[key] ?? null;
+  } catch (_) {
+    return null;
+  }
 }
 
 function renderHostError(reply) {
@@ -114,6 +169,12 @@ async function runQuery() {
     return;
   }
   setStatus(`Searching for ${state.domain}…`);
+
+  if (state.store === ALL_STORES) {
+    await runMultiStoreQuery();
+    return;
+  }
+
   let reply;
   try {
     reply = await sendBackground({
@@ -129,12 +190,61 @@ async function runQuery() {
     renderHostError(reply);
     return;
   }
-  const matches = reply.results ?? [];
-  if (matches.length === 0) {
-    setStatus(`No matches for ${state.domain}.`);
+  showMatches(reply.results ?? [], 0);
+}
+
+async function runMultiStoreQuery() {
+  if (state.stores.length === 0) {
+    setStatus("No stores to search.", "error");
     return;
   }
-  setStatus(`${matches.length} match${matches.length === 1 ? "" : "es"}.`);
+  const attempts = await Promise.all(
+    state.stores.map(async (entry) => {
+      try {
+        const reply = await sendBackground({
+          type: "query",
+          domain: state.domain,
+          store: entry.name,
+        });
+        if (reply.error) {
+          return { name: entry.name, results: [], skipped: true };
+        }
+        return { name: entry.name, results: reply.results ?? [], skipped: false };
+      } catch (_) {
+        return { name: entry.name, results: [], skipped: true };
+      }
+    }),
+  );
+  const matches = attempts.flatMap((a) => a.results);
+  // Each store's results are already sorted by score (the host does it);
+  // the merged list needs one more sort across stores.
+  matches.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  const skipped = attempts.filter((a) => a.skipped).map((a) => a.name);
+  showMatches(matches, skipped.length, skipped);
+}
+
+function showMatches(matches, skippedCount, skippedNames) {
+  if (matches.length === 0) {
+    if (skippedCount > 0) {
+      setStatus(
+        `No matches for ${state.domain} (${skippedCount} store(s) skipped: ${
+          skippedNames?.join(", ") ?? "errors"
+        }).`,
+        "error",
+      );
+    } else {
+      setStatus(`No matches for ${state.domain}.`);
+    }
+    return;
+  }
+  const noun = matches.length === 1 ? "match" : "matches";
+  let line = `${matches.length} ${noun}.`;
+  if (skippedCount > 0) {
+    line += ` (${skippedCount} store(s) skipped: ${
+      skippedNames?.join(", ") ?? "errors"
+    })`;
+  }
+  setStatus(line);
   for (const match of matches) {
     elements.results.appendChild(renderMatch(match));
   }
@@ -342,11 +452,22 @@ async function main() {
     return;
   }
   renderStores(stores);
+  const remembered = await recallStoreForHost(tab.hostname);
+  if (
+    remembered &&
+    (remembered === ALL_STORES ||
+      stores.some((s) => s.name === remembered))
+  ) {
+    elements.store.value = remembered;
+    state.store = remembered;
+  }
   await runQuery();
 }
 
 elements.store.addEventListener("change", () => {
   state.store = elements.store.value || null;
+  // Fire-and-forget; the runQuery below doesn't depend on the write.
+  rememberStoreForHost(state.domain, state.store);
   runQuery();
 });
 elements.refresh.addEventListener("click", async () => {
@@ -355,6 +476,15 @@ elements.refresh.addEventListener("click", async () => {
     return;
   }
   renderStores(stores);
+  const remembered = await recallStoreForHost(state.domain);
+  if (
+    remembered &&
+    (remembered === ALL_STORES ||
+      stores.some((s) => s.name === remembered))
+  ) {
+    elements.store.value = remembered;
+    state.store = remembered;
+  }
   await runQuery();
 });
 

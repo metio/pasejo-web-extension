@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: The pasejo Authors
+# SPDX-License-Identifier: 0BSD
+
+name: Verify Commits
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build + lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+
+      - name: Build unpacked extensions and archives
+        run: ./package.sh
+
+      - name: Install web-ext
+        run: npm install --no-progress --silent -g web-ext
+
+      # `web-ext lint` is Firefox-targeted, so run it against the Firefox
+      # bundle only. The Chromium bundle is validated by `package.sh` (the
+      # zip step would fail if manifest.json or any referenced file were
+      # missing) and at install time by Chrome itself.
+      - name: Lint Firefox bundle
+        run: web-ext lint --source-dir=dist/firefox
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: pasejo-extension
+          path: |
+            dist/pasejo-firefox.xpi
+            dist/pasejo-chromium.zip
+          if-no-files-found: error

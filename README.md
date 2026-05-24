@@ -41,11 +41,19 @@ If pasejo can't reach the system clipboard at all — typically a missing
 falls back to `navigator.clipboard.writeText` so the value still lands in the
 clipboard, just without the auto-clear; the status line says so.
 
+## Keyboard shortcut
+
+The extension binds **Ctrl+Shift+L** (Command+Shift+L on macOS) to open the
+popup. Rebind it from `chrome://extensions/shortcuts` (Chromium-family) or
+`about:addons → ⚙ → Manage Extension Shortcuts` (Firefox).
+
 ## Known limitations
 
-* **No keyboard shortcut for filling.** Click-only for now.
-* **No per-domain store preference.** The popup's *Store* dropdown selects
-  a store per-popup; the choice is not persisted.
+* **No inline suggestion picker in password fields.** The popup is the
+  only entry point; some users prefer a 1Password-style dropdown inside
+  the field itself.
+* **No save-new-credential flow.** Read-only for now — adding a new
+  secret still goes through the CLI.
 
 ## Installing the native-messaging host
 
@@ -82,8 +90,22 @@ pasejo browser install-manifest --browser firefox \
 ## Loading the extension
 
 ```sh
-./package.sh        # produces dist/firefox/ and dist/chromium/
+./package.sh        # produces:
+                    #   dist/firefox/          (load-unpacked dir)
+                    #   dist/chromium/         (load-unpacked dir)
+                    #   dist/pasejo-firefox.xpi   (AMO submission archive)
+                    #   dist/pasejo-chromium.zip  (Chrome Web Store submission)
 ```
+
+Lint the Firefox bundle before submission:
+
+```sh
+npm install -g web-ext   # one-time
+web-ext lint --source-dir=dist/firefox
+```
+
+CI runs the same `package.sh` + `web-ext lint` on every PR and publishes
+the artifacts under the workflow run.
 
 * **Firefox** — open `about:debugging#/runtime/this-firefox`, click
   *Load Temporary Add-on*, point it at `dist/firefox/manifest.json`.

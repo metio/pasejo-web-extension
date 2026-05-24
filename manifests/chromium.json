@@ -24,6 +24,15 @@
     "48": "icons/pasejo-48.png",
     "128": "icons/pasejo-128.png"
   },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "Open the pasejo popup"
+    }
+  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
@@ -35,6 +44,7 @@
   "permissions": [
     "activeTab",
     "nativeMessaging",
+    "storage",
     "webNavigation"
   ]
 }
