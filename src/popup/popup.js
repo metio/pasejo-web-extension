@@ -699,7 +699,18 @@ async function listFrames(tabId) {
   try {
     const frames = await api.webNavigation.getAllFrames({ tabId });
     if (Array.isArray(frames) && frames.length > 0) {
-      return frames.map((f) => f.frameId);
+      // Drop frames that can't have our content script registered:
+      //  * `errorOccurred: true` — the frame's navigation failed and no
+      //    document is loaded, so there is no message receiver.
+      //  * `url: "about:blank"` — either mid-navigation (no
+      //    `document_idle` yet) or an intentional empty iframe; our
+      //    manifest's `<all_urls>` does not match `about:*` and we
+      //    don't set `match_about_blank`, so a content script was
+      //    never injected there. Either case would cost the caller
+      //    one wasted `tabs.sendMessage` round-trip per frame.
+      return frames
+        .filter((f) => !f.errorOccurred && f.url !== "about:blank")
+        .map((f) => f.frameId);
     }
   } catch (_) {
     // Permission missing or tab closed — fall through to top-frame only.

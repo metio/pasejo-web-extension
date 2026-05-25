@@ -1703,6 +1703,79 @@ describe("popup.js", () => {
       api.webNavigation.getAllFrames.mockRejectedValueOnce(new Error("nope"));
       await expect(popup.listFrames(2)).resolves.toEqual([0]);
     });
+
+    it("filters out frames whose navigation errored (item W)", async () => {
+      const { api, popup } = await setUp();
+      api.webNavigation.getAllFrames.mockResolvedValueOnce([
+        { frameId: 0, url: "https://example.com" },
+        { frameId: 1, url: "https://example.com/iframe", errorOccurred: true },
+        { frameId: 2, url: "https://example.com/iframe-2" },
+      ]);
+      await expect(popup.listFrames(2)).resolves.toEqual([0, 2]);
+    });
+
+    it("filters out about:blank frames (no content script registered there)", async () => {
+      const { api, popup } = await setUp();
+      api.webNavigation.getAllFrames.mockResolvedValueOnce([
+        { frameId: 0, url: "https://example.com" },
+        { frameId: 1, url: "about:blank" },
+        { frameId: 2, url: "https://example.com/widget" },
+      ]);
+      await expect(popup.listFrames(2)).resolves.toEqual([0, 2]);
+    });
+
+    it("returns an empty list when every frame is filtered out (no fallback to [0])", async () => {
+      const { api, popup } = await setUp();
+      api.webNavigation.getAllFrames.mockResolvedValueOnce([
+        { frameId: 0, url: "about:blank" },
+        { frameId: 1, url: "https://x.test", errorOccurred: true },
+      ]);
+      // Returning [0] here would re-trigger the wasted round-trip the
+      // fix is designed to avoid (frame 0 IS about:blank above).
+      await expect(popup.listFrames(2)).resolves.toEqual([]);
+    });
+
+    it("keeps a frame whose url field is missing (the chrome.* webNavigation result for some transitional frames)", async () => {
+      const { api, popup } = await setUp();
+      api.webNavigation.getAllFrames.mockResolvedValueOnce([
+        { frameId: 0 },
+        { frameId: 1, url: "https://example.com" },
+      ]);
+      // Missing url is not the same as "about:blank"; better to try
+      // the frame and let the per-frame sendMessage catch handle a
+      // miss than to silently skip a candidate that may yet load.
+      await expect(popup.listFrames(2)).resolves.toEqual([0, 1]);
+    });
+  });
+
+  describe("dead-frame filtering downstream effects (item W)", () => {
+    it("fillAcrossFrames does not waste a fill round-trip on a filtered-out frame", async () => {
+      const { api, popup } = await setUp();
+      api.webNavigation.getAllFrames.mockResolvedValueOnce([
+        { frameId: 0, url: "https://example.com" },
+        { frameId: 1, url: "about:blank" },
+        { frameId: 2, url: "https://example.com/iframe-2", errorOccurred: true },
+        { frameId: 3, url: "https://example.com/login" },
+      ]);
+      stubProbeAndFill(api, {
+        byFrame: {
+          0: { ok: false },
+          3: { ok: true, filled: { username: true, password: true } },
+          // frames 1 and 2 are filtered out — if they were tried at
+          // all the test would still pass (their default reply is
+          // `ok:false`) but the `expect` below pins the call set so
+          // we lock in the win.
+        },
+      });
+      const reply = await popup.fillAcrossFrames(7, { type: "fill" });
+      expect(reply.ok).toBe(true);
+      const visitedFrames = api.tabs.sendMessage.mock.calls
+        .map(([, , opts]) => opts.frameId)
+        .sort((a, b) => a - b);
+      // Each surviving frame is hit twice (probe-focus + fill once we
+      // stop at frame 3), and nothing else.
+      expect(new Set(visitedFrames)).toEqual(new Set([0, 3]));
+    });
   });
 
   describe("fillAcrossFrames", () => {
