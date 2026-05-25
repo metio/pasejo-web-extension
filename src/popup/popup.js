@@ -638,6 +638,23 @@ async function listFrames(tabId) {
   return [0];
 }
 
+// Walks the full "pull a fresh store roster from the host, pick the
+// preferred entry for the current hostname, redraw the dropdown, and
+// re-run the query" pipeline. Both popup-open (`main`) and the Refresh
+// button go through this so the two call sites cannot drift on
+// ordering, hostname source, or bail semantics. Reads `state.domain`
+// because `main` has already populated it from the active tab before
+// the first call; the Refresh handler reuses the same field.
+async function refreshStoresAndQuery() {
+  const stores = await loadStores();
+  if (stores === null) {
+    return;
+  }
+  const preferred = await pickPreferredStore(stores, state.domain);
+  renderStores(stores, preferred);
+  await runQuery();
+}
+
 async function main() {
   const tab = await loadActiveTab();
   if (!tab) {
@@ -646,14 +663,7 @@ async function main() {
   }
   state.domain = tab.hostname;
   elements.domain.textContent = tab.hostname ?? "(no domain)";
-
-  const stores = await loadStores();
-  if (stores === null) {
-    return;
-  }
-  const preferred = await pickPreferredStore(stores, tab.hostname);
-  renderStores(stores, preferred);
-  await runQuery();
+  await refreshStoresAndQuery();
 }
 
 elements.store.addEventListener("change", () => {
@@ -675,13 +685,7 @@ elements.refresh.addEventListener("click", async () => {
   state.refreshing = true;
   elements.refresh.disabled = true;
   try {
-    const stores = await loadStores();
-    if (stores === null) {
-      return;
-    }
-    const preferred = await pickPreferredStore(stores, state.domain);
-    renderStores(stores, preferred);
-    await runQuery();
+    await refreshStoresAndQuery();
   } finally {
     state.refreshing = false;
     elements.refresh.disabled = false;

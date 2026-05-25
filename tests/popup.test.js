@@ -43,6 +43,7 @@ const EXPOSED = [
   "fillAcrossFrames",
   "listFrames",
   "main",
+  "refreshStoresAndQuery",
   "elements",
   "state",
 ];
@@ -1491,6 +1492,96 @@ describe("popup.js", () => {
       expect(popup.state.filling).toBe(false);
     });
 
+  });
+
+  describe("refreshStoresAndQuery (helper, item Q)", () => {
+    it("runs loadStores → pickPreferredStore → renderStores → runQuery in order on the happy path", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      api.runtime.sendMessage
+        .mockResolvedValueOnce({
+          ok: true,
+          response: {
+            protocol_version: 1,
+            stores: [
+              { name: "personal", default: true },
+              { name: "work", default: false },
+            ],
+          },
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          response: {
+            results: [
+              {
+                name: "alice",
+                username: "alice@example.com",
+                password: "hunter2",
+                match_kind: "url_field",
+                score: 1,
+              },
+            ],
+          },
+        });
+      api.storage.local.get.mockResolvedValue({
+        "store-for-host:example.com": "work",
+      });
+      await popup.refreshStoresAndQuery();
+      // list_stores then query — two background calls in order:
+      const types = api.runtime.sendMessage.mock.calls.map((c) => c[0].type);
+      expect(types).toEqual(["list_stores", "query"]);
+      // The remembered store wins the dropdown selection:
+      const work = Array.from(popup.elements.store.options).find(
+        (o) => o.value === "work",
+      );
+      expect(work.selected).toBe(true);
+      expect(popup.state.stores).toHaveLength(2);
+      // The query is wired up against state.domain:
+      expect(api.runtime.sendMessage).toHaveBeenLastCalledWith({
+        type: "query",
+        domain: "example.com",
+        store: popup.state.store,
+      });
+      // And the result is rendered:
+      expect(popup.elements.results.children.length).toBe(1);
+      expect(popup.elements.results.textContent).toMatch(/alice/);
+    });
+
+    it("bails before pickPreferredStore / renderStores / runQuery when loadStores returns null", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      api.runtime.sendMessage.mockResolvedValueOnce({
+        ok: false,
+        error: "host crashed",
+      });
+      await popup.refreshStoresAndQuery();
+      expect(api.runtime.sendMessage).toHaveBeenCalledTimes(1);
+      expect(api.storage.local.get).not.toHaveBeenCalled();
+      expect(popup.elements.results.children.length).toBe(0);
+      expect(popup.elements.status.textContent).toMatch(/Could not reach/);
+    });
+
+    it("looks up the per-host preference under state.domain (not whatever tab.hostname was when popup opened)", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "switched.example";
+      api.runtime.sendMessage
+        .mockResolvedValueOnce({
+          ok: true,
+          response: {
+            protocol_version: 1,
+            stores: [{ name: "personal", default: true }],
+          },
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          response: { results: [] },
+        });
+      api.storage.local.get.mockResolvedValue({});
+      await popup.refreshStoresAndQuery();
+      expect(api.storage.local.get).toHaveBeenCalledWith(
+        "store-for-host:switched.example",
+      );
+    });
   });
 
   describe("main()", () => {
