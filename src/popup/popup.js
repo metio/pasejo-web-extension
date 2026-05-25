@@ -190,6 +190,11 @@ function isCompatibleProtocol(version) {
   );
 }
 
+// DOM-only: rebuilds the store-selector dropdown to reflect `stores`
+// and the caller's `preferred` choice. Does not touch `state` — the
+// caller (currently `refreshStoresAndQuery`) is the canonical place
+// where state.stores / state.store get written, which keeps "what's
+// in the DOM" and "what's in state" updated together in one spot.
 function renderStores(stores, preferred) {
   elements.store.replaceChildren();
   if (stores.length > 1) {
@@ -223,8 +228,14 @@ function renderStores(stores, preferred) {
       option.selected = true;
     }
   }
-  state.stores = stores;
-  state.store = elements.store.value || null;
+}
+
+// Pure DOM read: the current dropdown value coerced to `null` when
+// the select is empty. Used as the canonical "what is the user looking
+// at right now" derivation so the change handler and
+// `refreshStoresAndQuery` share one implementation.
+function readSelectedStore() {
+  return elements.store.value || null;
 }
 
 async function pickPreferredStore(stores, hostname) {
@@ -651,7 +662,9 @@ async function refreshStoresAndQuery() {
     return;
   }
   const preferred = await pickPreferredStore(stores, state.domain);
+  state.stores = stores;
   renderStores(stores, preferred);
+  state.store = readSelectedStore();
   await runQuery();
 }
 
@@ -667,7 +680,7 @@ async function main() {
 }
 
 elements.store.addEventListener("change", () => {
-  state.store = elements.store.value || null;
+  state.store = readSelectedStore();
   // Fire-and-forget; the runQuery below doesn't depend on the write.
   rememberStoreForHost(state.domain, state.store);
   runQuery();

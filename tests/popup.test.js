@@ -28,6 +28,7 @@ const EXPOSED = [
   "loadStores",
   "isCompatibleProtocol",
   "renderStores",
+  "readSelectedStore",
   "pickPreferredStore",
   "rememberStoreForHost",
   "recallStoreForHost",
@@ -419,9 +420,10 @@ describe("popup.js", () => {
       );
       // happy-dom's HTMLSelectElement does not compute `.value` from
       // `option.selected = true` writes the way Chrome does, so we
-      // assert on the option flag directly. The source still drives
-      // `state.store` off the select's value — that side is exercised
-      // end-to-end by the bootstrap-behaviour tests further down.
+      // assert on the option flag directly. `state.store` is the
+      // caller's job to set (via readSelectedStore) — that side is
+      // exercised end-to-end by the bootstrap-behaviour tests further
+      // down.
       const optionB = Array.from(popup.elements.store.options).find(
         (o) => o.value === "b",
       );
@@ -471,7 +473,7 @@ describe("popup.js", () => {
       expect(labels).toContain("b (default)");
     });
 
-    it("populates state.stores and writes elements titles for hover hint", async () => {
+    it("writes element titles for hover hint", async () => {
       const { popup } = await setUp();
       popup.renderStores(
         [
@@ -480,17 +482,59 @@ describe("popup.js", () => {
         ],
         null,
       );
-      expect(popup.state.stores).toHaveLength(2);
       const titles = Array.from(popup.elements.store.options)
         .filter((o) => o.value !== popup.ALL_STORES)
         .map((o) => o.title);
       expect(titles).toEqual(["long-store-name-that-truncates", "another"]);
     });
 
-    it("sets state.store to null when the select is empty", async () => {
+    it("does not touch state.stores or state.store (item R: render is DOM-only)", async () => {
+      const { popup } = await setUp();
+      const beforeStores = popup.state.stores;
+      const beforeStore = popup.state.store;
+      popup.renderStores(
+        [
+          { name: "a", default: true },
+          { name: "b", default: false },
+        ],
+        "b",
+      );
+      expect(popup.state.stores).toBe(beforeStores);
+      expect(popup.state.store).toBe(beforeStore);
+    });
+  });
+
+  describe("readSelectedStore (item R)", () => {
+    it("returns the currently selected option's value", async () => {
+      const { popup } = await setUp();
+      popup.renderStores(
+        [
+          { name: "a", default: true },
+          { name: "b", default: false },
+        ],
+        "b",
+      );
+      // `b` is selected per option.selected = true (asserted in the
+      // renderStores test above); readSelectedStore should mirror that.
+      expect(popup.readSelectedStore()).toBe("b");
+    });
+
+    it("returns null when the select element is empty", async () => {
       const { popup } = await setUp();
       popup.renderStores([], null);
-      expect(popup.state.store).toBeNull();
+      expect(popup.readSelectedStore()).toBeNull();
+    });
+
+    it("returns the ALL_STORES sentinel when that option is selected", async () => {
+      const { popup } = await setUp();
+      popup.renderStores(
+        [
+          { name: "a", default: false },
+          { name: "b", default: true },
+        ],
+        popup.ALL_STORES,
+      );
+      expect(popup.readSelectedStore()).toBe(popup.ALL_STORES);
     });
   });
 
