@@ -270,13 +270,28 @@
   // successful fill, so the page itself has to confirm the change.
   // `outline` is used rather than `border` or `background` because it
   // sits outside the box model and can't shift the page layout.
+  //
+  // Save and restore each longhand individually rather than the
+  // `outline` shorthand. CSSOM serialises the shorthand to the empty
+  // string when only some longhands are set inline — saving "" and
+  // assigning "" back on restore would clear all three longhands and
+  // wipe out any per-property inline rule the page had configured.
+  // Per-longhand save/restore puts whatever the page had set back
+  // exactly where it was, and leaves any unset longhand empty so the
+  // page's stylesheet rules take over again.
   function pulse(el) {
-    const previousOutline = el.style.outline;
+    const previousWidth = el.style.outlineWidth;
+    const previousStyle = el.style.outlineStyle;
+    const previousColor = el.style.outlineColor;
     const previousOffset = el.style.outlineOffset;
-    el.style.outline = "2px solid #3a4ba0";
+    el.style.outlineWidth = "2px";
+    el.style.outlineStyle = "solid";
+    el.style.outlineColor = "#3a4ba0";
     el.style.outlineOffset = "0";
     setTimeout(() => {
-      el.style.outline = previousOutline;
+      el.style.outlineWidth = previousWidth;
+      el.style.outlineStyle = previousStyle;
+      el.style.outlineColor = previousColor;
       el.style.outlineOffset = previousOffset;
     }, 600);
   }

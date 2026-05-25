@@ -641,27 +641,112 @@ describe("fill.js content script", () => {
   });
 
   describe("pulse", () => {
-    it("applies a visible outline that restores after the 600 ms window", async () => {
+    it("applies the brand outline immediately and restores the original on the 600 ms timer", async () => {
       vi.useFakeTimers();
       const password = makeVisibleInput("password");
+      // Pre-existing outline set by the page as a shorthand — every
+      // longhand ends up populated, so the page's intent is fully
+      // recoverable after the pulse.
       password.style.outline = "1px dotted red";
       password.style.outlineOffset = "4px";
       await callListener(api, {
         type: "fill",
         password: "hunter2",
       });
-      // happy-dom normalises the shorthand serialisation (longhand
-      // order can change), so we assert on substrings rather than the
-      // exact form. Both the brand colour and the 2px width must be
-      // present immediately after fill; both the old colour and the old
-      // offset must come back after the 600 ms restore.
-      expect(password.style.outline).toContain("#3a4ba0");
-      expect(password.style.outline).toContain("2px");
+      // During the pulse: brand colour + 2 px width + zero offset.
+      expect(password.style.outlineColor).toBe("#3a4ba0");
+      expect(password.style.outlineWidth).toBe("2px");
+      expect(password.style.outlineStyle).toBe("solid");
       expect(password.style.outlineOffset).toBe("0");
       vi.advanceTimersByTime(600);
-      expect(password.style.outline).toContain("red");
-      expect(password.style.outline).toContain("1px");
+      // After restore: every longhand is back to its pre-pulse value.
+      expect(password.style.outlineWidth).toBe("1px");
+      expect(password.style.outlineStyle).toBe("dotted");
+      expect(password.style.outlineColor).toBe("red");
       expect(password.style.outlineOffset).toBe("4px");
+    });
+
+    it("restores a page-set outlineWidth that was set as a longhand only (item U)", async () => {
+      vi.useFakeTimers();
+      const password = makeVisibleInput("password");
+      // The bug: the page sets ONLY outlineWidth — the `outline`
+      // shorthand serialises to "" because the other longhands are
+      // unset, so the old shorthand-based save/restore captured ""
+      // and the restore wiped the page's 3 px setting.
+      password.style.outlineWidth = "3px";
+      await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(password.style.outlineWidth).toBe("2px");
+      vi.advanceTimersByTime(600);
+      expect(password.style.outlineWidth).toBe("3px");
+      // The other longhands were unset before the pulse — they should
+      // still be unset, so the page's stylesheet (not inline) wins.
+      expect(password.style.outlineStyle).toBe("");
+      expect(password.style.outlineColor).toBe("");
+    });
+
+    it("restores a page-set outlineColor that was set as a longhand only", async () => {
+      vi.useFakeTimers();
+      const password = makeVisibleInput("password");
+      password.style.outlineColor = "purple";
+      await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(password.style.outlineColor).toBe("#3a4ba0");
+      vi.advanceTimersByTime(600);
+      expect(password.style.outlineColor).toBe("purple");
+      expect(password.style.outlineWidth).toBe("");
+      expect(password.style.outlineStyle).toBe("");
+    });
+
+    it("restores a page-set outlineStyle that was set as a longhand only", async () => {
+      vi.useFakeTimers();
+      const password = makeVisibleInput("password");
+      password.style.outlineStyle = "dashed";
+      await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(password.style.outlineStyle).toBe("solid");
+      vi.advanceTimersByTime(600);
+      expect(password.style.outlineStyle).toBe("dashed");
+      expect(password.style.outlineWidth).toBe("");
+      expect(password.style.outlineColor).toBe("");
+    });
+
+    it("restores a page-set outlineOffset that was set as a longhand only", async () => {
+      vi.useFakeTimers();
+      const password = makeVisibleInput("password");
+      password.style.outlineOffset = "7px";
+      await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(password.style.outlineOffset).toBe("0");
+      vi.advanceTimersByTime(600);
+      expect(password.style.outlineOffset).toBe("7px");
+    });
+
+    it("leaves every longhand empty when nothing was set inline before the pulse", async () => {
+      vi.useFakeTimers();
+      const password = makeVisibleInput("password");
+      // No pre-existing outline on the input.
+      expect(password.style.outlineWidth).toBe("");
+      expect(password.style.outlineStyle).toBe("");
+      expect(password.style.outlineColor).toBe("");
+      expect(password.style.outlineOffset).toBe("");
+      await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      vi.advanceTimersByTime(600);
+      expect(password.style.outlineWidth).toBe("");
+      expect(password.style.outlineStyle).toBe("");
+      expect(password.style.outlineColor).toBe("");
+      expect(password.style.outlineOffset).toBe("");
     });
   });
 
