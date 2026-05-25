@@ -159,8 +159,14 @@ Pin the extension to the toolbar so the popup is one click away.
 ## Architecture
 
 * The extension's background page connects to the `wtf.metio.pasejo`
-  native-messaging host on demand (one connection per popup request,
-  no persistent port).
+  native-messaging host on demand. Single-store queries open one
+  connection per request (no persistent port). Multi-store queries
+  ("All stores" with N stores configured) take a single connection
+  carrying every per-store query as a `query_multi` batch — the
+  host's worker threads decrypt each store in parallel so a
+  YubiKey-blocked store doesn't gate the others. The extension and
+  the host negotiate on `protocol_version` (currently `1`) and
+  refuse to operate if the two sides disagree.
 * When the user opens the popup, the extension sends a `query` request
   with the active tab's hostname and renders the returned matches.
 * Filling a credential sends a message to the active tab's content

@@ -24,8 +24,14 @@ describe("protocol.js", () => {
     expect(globalThis.PASEJO).toBeDefined();
     expect(Object.isFrozen(globalThis.PASEJO)).toBe(true);
     expect(globalThis.PASEJO.NATIVE_HOST).toBe("wtf.metio.pasejo");
-    expect(globalThis.PASEJO.PROTOCOL_MIN).toBe(1);
-    expect(globalThis.PASEJO.PROTOCOL_MAX).toBe(1);
+    expect(globalThis.PASEJO.PROTOCOL_VERSION).toBe(1);
+    // Range-based negotiation (PROTOCOL_MIN/PROTOCOL_MAX) and the
+    // dispatch threshold (MULTI_STORE_MIN_VERSION) were removed when
+    // we collapsed to a single supported version — fail loudly if
+    // anyone re-introduces them by accident.
+    expect(globalThis.PASEJO.PROTOCOL_MIN).toBeUndefined();
+    expect(globalThis.PASEJO.PROTOCOL_MAX).toBeUndefined();
+    expect(globalThis.PASEJO.MULTI_STORE_MIN_VERSION).toBeUndefined();
   });
 
   it("freezes the ACTION map", () => {

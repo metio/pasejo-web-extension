@@ -10,12 +10,14 @@
     // Must match `HOST_NAME` in the pasejo install-manifest module.
     NATIVE_HOST: "wtf.metio.pasejo",
 
-    // Inclusive range of `protocol_version` values from the host that the
-    // extension knows how to talk to. Mirrors `PROTOCOL_VERSION` in
-    // src/browser/protocol.rs (set MIN and MAX equal until the host
-    // grows a backwards-compatible v2 we want to also support).
-    PROTOCOL_MIN: 1,
-    PROTOCOL_MAX: 1,
+    // The single `protocol_version` value the extension knows how to
+    // talk to. Mirrors `PROTOCOL_VERSION` in src/browser/protocol.rs;
+    // the extension refuses to operate against any host that doesn't
+    // report this exact number. The version-negotiation mechanism is
+    // here from day one so the very first incompatible change can
+    // bump it and surface a clear error to the user, but there is
+    // currently only one valid version.
+    PROTOCOL_VERSION: 1,
 
     // Request actions accepted by `pasejo browser host`.
     ACTION: Object.freeze({

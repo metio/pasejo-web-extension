@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: The pasejo Authors
 // SPDX-License-Identifier: 0BSD
 
-const { ERROR_COPY, PROTOCOL_MIN, PROTOCOL_MAX, api } = globalThis.PASEJO;
+const { ERROR_COPY, PROTOCOL_VERSION, api } = globalThis.PASEJO;
 
 const elements = {
   domain: document.getElementById("domain"),
@@ -172,7 +172,7 @@ async function loadStores() {
   if (!isCompatibleProtocol(reply.protocol_version)) {
     setStatus(
       `Host speaks protocol ${reply.protocol_version ?? "(unknown)"}, ` +
-        `extension supports ${PROTOCOL_MIN}-${PROTOCOL_MAX}. ` +
+        `extension speaks ${PROTOCOL_VERSION}. ` +
         "Update the pasejo binary or the extension so both ends match.",
       "error",
     );
@@ -191,11 +191,7 @@ async function loadStores() {
 }
 
 function isCompatibleProtocol(version) {
-  return (
-    typeof version === "number" &&
-    version >= PROTOCOL_MIN &&
-    version <= PROTOCOL_MAX
-  );
+  return version === PROTOCOL_VERSION;
 }
 
 // DOM-only: rebuilds the store-selector dropdown to reflect `stores`
@@ -433,23 +429,11 @@ async function runMultiStoreQuery(generation) {
     );
     return;
   }
-  const attempts = await Promise.all(
-    state.stores.map(async (entry) => {
-      try {
-        const reply = await sendBackground({
-          type: "query",
-          domain: state.domain,
-          store: entry.name,
-        });
-        if (reply.error || !Array.isArray(reply.results)) {
-          return { name: entry.name, results: [], skipped: true };
-        }
-        return { name: entry.name, results: reply.results, skipped: false };
-      } catch (_) {
-        return { name: entry.name, results: [], skipped: true };
-      }
-    }),
-  );
+  // Single native connection carrying every per-store query as one
+  // `query_multi` batch. The host's worker threads decrypt stores in
+  // parallel, so a YubiKey-blocked store holds back only its own
+  // response while every other store's reply arrives normally.
+  const attempts = await fanOutBatch();
   if (generation !== state.queryGeneration) {
     return;
   }
@@ -459,6 +443,46 @@ async function runMultiStoreQuery(generation) {
   matches.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   const skipped = attempts.filter((a) => a.skipped).map((a) => a.name);
   showMatches(matches, skipped.length, skipped);
+}
+
+// Fans every per-store query through a single `connectNative` as one
+// `query_multi` batch. The host processes requests on worker threads
+// so a YubiKey-blocked store holds back only its own slot — the rest
+// come back as fast as their own decrypts allow. The background
+// returns a `responses` array aligned 1:1 with the input order, so we
+// re-pair each entry with its store name.
+async function fanOutBatch() {
+  let reply;
+  try {
+    reply = await api.runtime.sendMessage({
+      type: "query_multi",
+      requests: state.stores.map((entry) => ({
+        domain: state.domain,
+        store: entry.name,
+      })),
+    });
+  } catch (_) {
+    // The whole batch failed — treat every store as skipped.
+    return state.stores.map((entry) => ({
+      name: entry.name,
+      results: [],
+      skipped: true,
+    }));
+  }
+  if (!reply?.ok || !Array.isArray(reply.responses)) {
+    return state.stores.map((entry) => ({
+      name: entry.name,
+      results: [],
+      skipped: true,
+    }));
+  }
+  return state.stores.map((entry, idx) => {
+    const response = reply.responses[idx];
+    if (!response || response.error || !Array.isArray(response.results)) {
+      return { name: entry.name, results: [], skipped: true };
+    }
+    return { name: entry.name, results: response.results, skipped: false };
+  });
 }
 
 function showMatches(matches, skippedCount, skippedNames) {

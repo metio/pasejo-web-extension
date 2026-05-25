@@ -209,10 +209,11 @@ describe("popup.js", () => {
       expect(popup.isCompatibleProtocol(1)).toBe(true);
     });
 
-    it("rejects 0 and 2", async () => {
+    it("rejects every other integer version", async () => {
       const { popup } = await setUp();
       expect(popup.isCompatibleProtocol(0)).toBe(false);
       expect(popup.isCompatibleProtocol(2)).toBe(false);
+      expect(popup.isCompatibleProtocol(99)).toBe(false);
     });
 
     it("rejects non-number values", async () => {
@@ -1262,49 +1263,33 @@ describe("popup.js", () => {
       popup.state.store = popup.ALL_STORES;
       popup.state.protocolOk = true;
       popup.state.stores = [{ name: "a" }, { name: "b" }];
-      // q1 fans out to both stores via two sendBackground calls; we
-      // capture both. q2 also fans out; we capture both. Tracking
-      // which mock-returned promise feeds which runQuery is fiddly,
-      // so instead we set q1 up to use deferred promises (so it never
-      // resolves until we say so) and q2 to use immediately-resolved
-      // good replies.
-      const d1a = deferred();
-      const d1b = deferred();
+      // Both queries go through one query_multi message each. q1's
+      // batch is deferred (never resolves until we say so) and q2's
+      // batch resolves immediately with fresh results.
+      const d1 = deferred();
       api.runtime.sendMessage
-        // q1's first store:
-        .mockReturnValueOnce(d1a.promise)
-        // q1's second store:
-        .mockReturnValueOnce(d1b.promise)
-        // q2's two stores:
+        // q1's whole batch:
+        .mockReturnValueOnce(d1.promise)
+        // q2's whole batch:
         .mockResolvedValueOnce({
           ok: true,
-          response: {
-            results: [{ name: "fresh-a", match_kind: "name", score: 0.9 }],
-          },
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          response: {
-            results: [{ name: "fresh-b", match_kind: "name", score: 0.7 }],
-          },
+          responses: [
+            { results: [{ name: "fresh-a", match_kind: "name", score: 0.9 }] },
+            { results: [{ name: "fresh-b", match_kind: "name", score: 0.7 }] },
+          ],
         });
       const q1 = popup.runQuery();
       const q2 = popup.runQuery();
       // Wait for q2 to finish rendering.
       await flushAsync();
       await flushAsync();
-      // Now let q1's stale fan-out complete.
-      d1a.resolve({
+      // Now let q1's stale batch complete.
+      d1.resolve({
         ok: true,
-        response: {
-          results: [{ name: "stale-a", match_kind: "name", score: 0.9 }],
-        },
-      });
-      d1b.resolve({
-        ok: true,
-        response: {
-          results: [{ name: "stale-b", match_kind: "name", score: 0.7 }],
-        },
+        responses: [
+          { results: [{ name: "stale-a", match_kind: "name", score: 0.9 }] },
+          { results: [{ name: "stale-b", match_kind: "name", score: 0.7 }] },
+        ],
       });
       await Promise.all([q1, q2]);
       const names = Array.from(
@@ -1370,89 +1355,6 @@ describe("popup.js", () => {
       expect(popup.elements.status.textContent).toMatch(/No stores to search/);
     });
 
-    it("merges results across stores and re-sorts by score", async () => {
-      const { api, popup } = await setUp();
-      popup.state.domain = "example.com";
-      popup.state.store = popup.ALL_STORES;
-      popup.state.protocolOk = true;
-      popup.state.stores = [{ name: "a" }, { name: "b" }];
-      api.runtime.sendMessage
-        .mockResolvedValueOnce({
-          ok: true,
-          response: {
-            results: [
-              { name: "low", store: "a", match_kind: "name", score: 0.5 },
-            ],
-          },
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          response: {
-            results: [
-              { name: "high", store: "b", match_kind: "url_field", score: 1 },
-            ],
-          },
-        });
-      await popup.runQuery();
-      const names = Array.from(
-        popup.elements.results.querySelectorAll(".name"),
-      ).map((n) => n.textContent);
-      expect(names).toEqual(["high", "low"]);
-    });
-
-    it("treats per-store errors as skipped, surfaces the count in the status", async () => {
-      const { api, popup } = await setUp();
-      popup.state.domain = "example.com";
-      popup.state.store = popup.ALL_STORES;
-      popup.state.protocolOk = true;
-      popup.state.stores = [{ name: "good" }, { name: "broken" }];
-      api.runtime.sendMessage
-        .mockResolvedValueOnce({
-          ok: true,
-          response: {
-            results: [{ name: "x", match_kind: "name", score: 0.5 }],
-          },
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          response: { error: "identity_locked" },
-        });
-      await popup.runQuery();
-      expect(popup.elements.status.textContent).toMatch(/1 store\(s\) skipped/);
-    });
-
-    it("treats sendBackground throws as skipped", async () => {
-      const { api, popup } = await setUp();
-      popup.state.domain = "example.com";
-      popup.state.store = popup.ALL_STORES;
-      popup.state.protocolOk = true;
-      popup.state.stores = [{ name: "a" }, { name: "b" }];
-      api.runtime.sendMessage
-        .mockRejectedValueOnce(new Error("net"))
-        .mockResolvedValueOnce({
-          ok: true,
-          response: {
-            results: [{ name: "x", match_kind: "name", score: 0.5 }],
-          },
-        });
-      await popup.runQuery();
-      expect(popup.elements.status.textContent).toMatch(/1 store\(s\) skipped/);
-    });
-
-    it("treats a non-array results field as skipped", async () => {
-      const { api, popup } = await setUp();
-      popup.state.domain = "example.com";
-      popup.state.store = popup.ALL_STORES;
-      popup.state.protocolOk = true;
-      popup.state.stores = [{ name: "a" }];
-      api.runtime.sendMessage.mockResolvedValueOnce({
-        ok: true,
-        response: { results: "broken" },
-      });
-      await popup.runQuery();
-      expect(popup.elements.status.textContent).toMatch(/1 store\(s\) skipped/);
-    });
-
     it("renders 'no matches' with skipped count when nothing matched anywhere", async () => {
       const { api, popup } = await setUp();
       popup.state.domain = "example.com";
@@ -1461,7 +1363,7 @@ describe("popup.js", () => {
       popup.state.stores = [{ name: "a" }];
       api.runtime.sendMessage.mockResolvedValueOnce({
         ok: true,
-        response: { results: [] },
+        responses: [{ results: [] }],
       });
       await popup.runQuery();
       expect(popup.elements.status.textContent).toMatch(/No matches/);
@@ -1473,37 +1375,175 @@ describe("popup.js", () => {
       popup.state.store = popup.ALL_STORES;
       popup.state.protocolOk = true;
       popup.state.stores = [{ name: "a" }, { name: "b" }];
-      // Two stores so the second leg also produces a comparison call —
-      // together the two compares cover both `?? 0` branches on both
-      // sides of the subtraction.
-      api.runtime.sendMessage
-        .mockResolvedValueOnce({
-          ok: true,
-          response: {
+      // The host sorts within each store; the popup sorts across
+      // stores. Mixing scored / unscored entries in BOTH per-store
+      // slots covers both sides of the `?? 0` fallback in the
+      // popup's merge sort.
+      api.runtime.sendMessage.mockResolvedValueOnce({
+        ok: true,
+        responses: [
+          {
             results: [
               { name: "high", match_kind: "name", score: 0.7 },
               { name: "no_score_b", match_kind: "name" },
             ],
           },
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          response: {
+          {
             results: [
               { name: "no_score_a", match_kind: "name" },
               { name: "mid", match_kind: "name", score: 0.5 },
             ],
           },
-        });
+        ],
+      });
       await popup.runQuery();
       const names = Array.from(
         popup.elements.results.querySelectorAll(".name"),
       ).map((n) => n.textContent);
-      // Sort is by descending score: 0.7, 0.5, then the two zero-scored
-      // entries in stable insertion order.
+      // Descending score: 0.7, 0.5, then the two zero-scored entries
+      // in stable insertion order.
       expect(names[0]).toBe("high");
       expect(names[1]).toBe("mid");
       expect(names.slice(2).sort()).toEqual(["no_score_a", "no_score_b"]);
+    });
+  });
+
+  describe("multi-store batch path (item V)", () => {
+    // The popup uses a single `query_multi` message to background —
+    // one native connection serving every store concurrently, so a
+    // stuck store doesn't gate the rest. The background returns a
+    // {ok, responses} envelope already aligned to the input store
+    // order; the popup unpairs it back into the {results, skipped}
+    // shape the rest of runMultiStoreQuery expects.
+
+    it("merges results across stores via the batch path", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }, { name: "b" }];
+      api.runtime.sendMessage.mockResolvedValueOnce({
+        ok: true,
+        responses: [
+          { results: [{ name: "low", store: "a", match_kind: "name", score: 0.5 }] },
+          {
+            results: [
+              { name: "high", store: "b", match_kind: "url_field", score: 1 },
+            ],
+          },
+        ],
+      });
+      await popup.runQuery();
+      const sent = api.runtime.sendMessage.mock.calls.at(-1)[0];
+      expect(sent.type).toBe("query_multi");
+      expect(sent.requests).toEqual([
+        { domain: "example.com", store: "a" },
+        { domain: "example.com", store: "b" },
+      ]);
+      const names = Array.from(
+        popup.elements.results.querySelectorAll(".name"),
+      ).map((n) => n.textContent);
+      expect(names).toEqual(["high", "low"]);
+    });
+
+    it("marks a per-store error response as skipped", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "good" }, { name: "broken" }];
+      api.runtime.sendMessage.mockResolvedValueOnce({
+        ok: true,
+        responses: [
+          { results: [{ name: "x", match_kind: "name", score: 0.5 }] },
+          { error: "identity_locked", hint: "touch your key" },
+        ],
+      });
+      await popup.runQuery();
+      expect(popup.elements.status.textContent).toMatch(/1 store\(s\) skipped/);
+    });
+
+    it("marks a per-store non-array results field as skipped", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }];
+      api.runtime.sendMessage.mockResolvedValueOnce({
+        ok: true,
+        responses: [{ results: "broken" }],
+      });
+      await popup.runQuery();
+      expect(popup.elements.status.textContent).toMatch(/1 store\(s\) skipped/);
+    });
+
+    it("marks an undefined slot in the responses array as skipped (defensive)", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }, { name: "b" }];
+      api.runtime.sendMessage.mockResolvedValueOnce({
+        ok: true,
+        responses: [{ results: [{ name: "x", match_kind: "name", score: 0.5 }] }],
+      });
+      await popup.runQuery();
+      // Slot 1 was undefined → store "b" skipped.
+      expect(popup.elements.status.textContent).toMatch(/1 store\(s\) skipped/);
+    });
+
+    it("marks every store skipped when the background rejects the batch", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }, { name: "b" }];
+      api.runtime.sendMessage.mockRejectedValueOnce(new Error("native gone"));
+      await popup.runQuery();
+      expect(popup.elements.status.textContent).toMatch(/2 store\(s\) skipped/);
+    });
+
+    it("marks every store skipped when the background returns ok=false", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }];
+      api.runtime.sendMessage.mockResolvedValueOnce({
+        ok: false,
+        error: "native messaging port could not be opened",
+      });
+      await popup.runQuery();
+      expect(popup.elements.status.textContent).toMatch(/1 store\(s\) skipped/);
+    });
+
+    it("marks every store skipped when the background returns a non-array responses field", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }];
+      api.runtime.sendMessage.mockResolvedValueOnce({
+        ok: true,
+        responses: "broken",
+      });
+      await popup.runQuery();
+      expect(popup.elements.status.textContent).toMatch(/1 store\(s\) skipped/);
+    });
+
+    it("routes multi-store queries through exactly one query_multi (no per-port fan-out path exists)", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }, { name: "b" }];
+      api.runtime.sendMessage.mockResolvedValueOnce({
+        ok: true,
+        responses: [{ results: [] }, { results: [] }],
+      });
+      await popup.runQuery();
+      const types = api.runtime.sendMessage.mock.calls.map((c) => c[0].type);
+      expect(types).toEqual(["query_multi"]);
     });
   });
 

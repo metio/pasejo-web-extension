@@ -153,6 +153,141 @@ function sendNativeRequest(request) {
   });
 }
 
+// Multi-store batch over a single connection. Opens one port, fans out
+// every request with a unique `request_id`, collects responses out of
+// order, and resolves once each request has either landed a reply or
+// a per-request timeout has expired. The point is failure isolation:
+// a YubiKey-blocked decrypt on store A holds back only its own
+// response, while store B / C / D return immediately. Under the v1
+// per-port model the same scenario blocked the popup for the full
+// 30 s timeout AND lost every other store's results (the timeout
+// killed the shared port).
+//
+// The returned `responses` array is aligned 1:1 with the `requests`
+// argument: index i is either the host's reply for `requests[i]` or
+// an error envelope `{ error, hint }` when that specific request timed
+// out or the connection failed.
+function sendNativeBatch(requests) {
+  return new Promise((resolve, reject) => {
+    if (!Array.isArray(requests) || requests.length === 0) {
+      resolve([]);
+      return;
+    }
+
+    let port;
+    try {
+      port = api.runtime.connectNative(NATIVE_HOST);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    if (!port) {
+      reject(new Error("native messaging port could not be opened"));
+      return;
+    }
+
+    const responses = new Array(requests.length);
+    const pending = new Set(requests.map((_, idx) => idx + 1));
+    const timers = new Map();
+    let teardownDone = false;
+
+    const teardown = () => {
+      if (teardownDone) {
+        return;
+      }
+      teardownDone = true;
+      for (const timer of timers.values()) {
+        clearTimeout(timer);
+      }
+      timers.clear();
+      try {
+        port.disconnect();
+      } catch (_) {
+        // Already disconnected.
+      }
+    };
+
+    // Records a per-request outcome. Invariants the callers maintain:
+    //   * `idx` always points at a still-pending slot — the message
+    //     handler checks `pending.has` before calling; the disconnect
+    //     handler iterates the *current* pending set; the per-request
+    //     timer and the postMessage catch each fire exactly once per
+    //     slot and the first one to fire is the one that holds the
+    //     slot. Any second call for the same `idx` would be a bug,
+    //     and we want the noise rather than a silent swallow.
+    const finalize = (idx, payload) => {
+      const requestId = idx + 1;
+      pending.delete(requestId);
+      responses[idx] = payload;
+      const timer = timers.get(requestId);
+      clearTimeout(timer);
+      timers.delete(requestId);
+      if (pending.size === 0) {
+        teardown();
+        resolve(responses);
+      }
+    };
+
+    port.onMessage.addListener((message) => {
+      try {
+        validateResponseShape(message, 0);
+      } catch (err) {
+        // A malformed message poisons the whole batch: we can't trust
+        // any subsequent reply on this port either.
+        teardown();
+        reject(err);
+        return;
+      }
+      const requestId =
+        message && typeof message === "object"
+          ? Number(message.request_id)
+          : Number.NaN;
+      if (!Number.isInteger(requestId) || !pending.has(requestId)) {
+        // Out-of-band reply (wrong id, repeat, or v1 host that doesn't
+        // echo request_id). Drop it — the per-request timer is the
+        // backstop.
+        return;
+      }
+      const { request_id: _omit, ...payload } = message;
+      finalize(requestId - 1, payload);
+    });
+    port.onDisconnect.addListener(() => {
+      const err = api.runtime.lastError;
+      const message = err?.message ?? "native host disconnected before reply";
+      // Mark every still-pending request as transport-failed; resolve
+      // with what we collected so far. The popup will surface those as
+      // skipped stores.
+      for (const id of [...pending]) {
+        finalize(id - 1, { error: "transport_error", hint: message });
+      }
+      teardown();
+      resolve(responses);
+    });
+
+    for (let i = 0; i < requests.length; i += 1) {
+      const requestId = i + 1;
+      const timer = setTimeout(() => {
+        finalize(i, {
+          error: "transport_error",
+          hint: `request ${requestId} did not get a response within ${NATIVE_TIMEOUT_MS / 1000}s`,
+        });
+      }, NATIVE_TIMEOUT_MS);
+      timers.set(requestId, timer);
+      try {
+        port.postMessage({ request_id: requestId, ...requests[i] });
+      } catch (err) {
+        // postMessage failed for one request; record it as failed and
+        // keep going. Most plausibly the port is already dead, in
+        // which case the onDisconnect handler will tidy up the rest.
+        finalize(i, {
+          error: "transport_error",
+          hint: err.message,
+        });
+      }
+    }
+  });
+}
+
 // The popup is the only caller; it sends typed requests and awaits the
 // host's reply. Returning a Promise from the listener tells Firefox to
 // keep the channel open; for Chromium we additionally return `true` so
@@ -177,6 +312,20 @@ api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case "list_stores": {
       sendNativeRequest({ action: ACTION.ListStores })
         .then((response) => sendResponse({ ok: true, response }))
+        .catch((err) => sendResponse({ ok: false, error: err.message }));
+      return true;
+    }
+    case "query_multi": {
+      // The popup constructs one entry per store and the background
+      // fans them all out over a single native connection. Each entry
+      // is a `query` request payload; the background adds `request_id`.
+      const requests = (message.requests ?? []).map((r) => ({
+        action: ACTION.Query,
+        domain: r.domain,
+        store: r.store ?? null,
+      }));
+      sendNativeBatch(requests)
+        .then((responses) => sendResponse({ ok: true, responses }))
         .catch((err) => sendResponse({ ok: false, error: err.message }));
       return true;
     }
