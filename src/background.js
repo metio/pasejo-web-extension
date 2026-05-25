@@ -93,6 +93,16 @@ function sendNativeRequest(request) {
       reject(err);
       return;
     }
+    if (!port) {
+      // The WebExtensions spec says `connectNative` returns a `Port` or
+      // throws, but if a buggy browser ever returns null/undefined the
+      // subsequent `port.onMessage` deref would surface a bare
+      // TypeError to the popup ("Cannot read properties of null …") and
+      // leave the response timer scheduled until it fires. Reject with
+      // a self-describing message and bail before either happens.
+      reject(new Error("native messaging port could not be opened"));
+      return;
+    }
 
     let settled = false;
     const settle = (fn, value) => {

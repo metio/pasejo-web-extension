@@ -218,6 +218,44 @@ describe("background.js", () => {
       expect(reply.error).toMatch(/native messaging is disabled/);
     });
 
+    it("rejects with a clean message when connectNative returns null (item O)", async () => {
+      // The WebExtensions spec says connectNative returns a Port or
+      // throws, but a buggy/locked-down browser could return null. The
+      // null guard short-circuits before the `port.onMessage` deref so
+      // the popup gets a self-describing error instead of a bare
+      // "Cannot read properties of null …" TypeError.
+      api.runtime.connectNative = vi.fn(() => null);
+      const reply = await invokeBackgroundListener(api, {
+        type: "list_stores",
+      });
+      expect(reply).toEqual({
+        ok: false,
+        error: "native messaging port could not be opened",
+      });
+    });
+
+    it("does not leak the 30s response timer when connectNative returns null", async () => {
+      vi.useFakeTimers();
+      api.runtime.connectNative = vi.fn(() => null);
+      const reply = await invokeBackgroundListener(api, {
+        type: "list_stores",
+      });
+      expect(reply.ok).toBe(false);
+      // Before the null-port guard, the timeout `setTimeout` was
+      // scheduled before the TypeError fired, so a stray timer sat
+      // pending until it harmlessly fired 30s later. The guard short-
+      // circuits earlier, so no timer should be in flight.
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("rejects with the same clean message when connectNative returns undefined", async () => {
+      api.runtime.connectNative = vi.fn(() => undefined);
+      const reply = await invokeBackgroundListener(api, {
+        type: "list_stores",
+      });
+      expect(reply.error).toBe("native messaging port could not be opened");
+    });
+
     it("propagates a postMessage throw as the listener's error", async () => {
       api.runtime.connectNative = vi.fn(() => {
         const port = {
