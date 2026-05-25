@@ -207,16 +207,22 @@ function sendNativeBatch(requests) {
       }
     };
 
-    // Records a per-request outcome. Invariants the callers maintain:
-    //   * `idx` always points at a still-pending slot — the message
-    //     handler checks `pending.has` before calling; the disconnect
-    //     handler iterates the *current* pending set; the per-request
-    //     timer and the postMessage catch each fire exactly once per
-    //     slot and the first one to fire is the one that holds the
-    //     slot. Any second call for the same `idx` would be a bug,
-    //     and we want the noise rather than a silent swallow.
+    // Records a per-request outcome. The first `pending.has` check
+    // is load-bearing: it guards against the per-request timer's
+    // callback firing AFTER the slot has already been settled by a
+    // real reply. `clearTimeout` doesn't cancel a callback that's
+    // already in the event loop's macrotask queue — the message-path
+    // can win the race to call `finalize` first, run `clearTimeout`,
+    // and resolve the batch, only for the timer's stale callback to
+    // run a moment later and overwrite `responses[idx]` with
+    // `transport_error`. Since `responses` is the same array the
+    // resolved promise hands to the popup, that mutation would be
+    // visible to the consumer after the fact.
     const finalize = (idx, payload) => {
       const requestId = idx + 1;
+      if (!pending.has(requestId)) {
+        return;
+      }
       pending.delete(requestId);
       responses[idx] = payload;
       const timer = timers.get(requestId);

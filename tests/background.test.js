@@ -556,6 +556,58 @@ describe("background.js", () => {
       expect(reply.responses[0].results[0].name).toBe("first");
     });
 
+    it("query_multi ignores a per-request timeout that fires after the slot has settled (review7 item A)", async () => {
+      // The race the fix targets: a per-request setTimeout callback
+      // can already be in the browser's macrotask queue when
+      // `finalize` runs `clearTimeout` from the message-path. The
+      // cancellation is too late — the queued callback still runs.
+      // Without the `pending.has` guard inside `finalize`, that stale
+      // callback overwrites `responses[idx]` with `transport_error`
+      // AFTER the batch has already resolved with the real reply,
+      // mutating the array the popup is reading.
+      //
+      // vitest's fake-timer engine respects clearTimeout
+      // synchronously, so the natural race doesn't reproduce there.
+      // We instead stub `setTimeout` to capture every scheduled
+      // callback without firing it, and `clearTimeout` to be a no-op
+      // (so the timer "stays in the queue" the way the buggy real
+      // browser does), then manually invoke the captured callback
+      // after the slot has been settled by a real reply.
+      const capturedTimers = [];
+      const origSetTimeout = globalThis.setTimeout;
+      const origClearTimeout = globalThis.clearTimeout;
+      globalThis.setTimeout = (cb) => {
+        capturedTimers.push(cb);
+        return capturedTimers.length;
+      };
+      globalThis.clearTimeout = () => {};
+      try {
+        const replyPromise = invokeBackgroundListener(api, {
+          type: "query_multi",
+          requests: [{ domain: "a.test", store: "a" }],
+        });
+        const port = lastConnectedPort(api);
+        port.__emitMessage({
+          request_id: 1,
+          results: [{ name: "real" }],
+        });
+        // The slot is settled; the captured per-request timer would
+        // be a no-op in a real browser if clearTimeout caught it in
+        // time — but in the race it fires anyway.
+        expect(capturedTimers).toHaveLength(1);
+        capturedTimers[0]();
+        const reply = await replyPromise;
+        expect(reply.ok).toBe(true);
+        expect(reply.responses[0]).toEqual({ results: [{ name: "real" }] });
+        // CRITICAL: the real reply must NOT have been overwritten
+        // with the stale-timer's transport_error payload.
+        expect(reply.responses[0].error).toBeUndefined();
+      } finally {
+        globalThis.setTimeout = origSetTimeout;
+        globalThis.clearTimeout = origClearTimeout;
+      }
+    });
+
     it("tolerates `port.disconnect()` throwing on the cleanup path", async () => {
       // Once a port has already been torn down by the browser, calling
       // `disconnect` a second time can throw — `settle` swallows that
