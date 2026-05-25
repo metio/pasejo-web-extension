@@ -39,6 +39,33 @@ const state = {
   refreshing: false,
 };
 
+// Status messages above this many characters get visibly truncated
+// with an ellipsis; the full text moves to the element's `title` so
+// hover / long-press still reveals it. 160 is roughly the number of
+// 13 px-monospace glyphs that fit in two and a half lines of the
+// 340-420 px popup; anything longer used to push the results list
+// down. The CSS `-webkit-line-clamp` is a second, layout-side cap
+// that protects against unexpected wrapping inside the budget.
+const MAX_STATUS_CHARS = 160;
+
+// Pure helper: returns `{ text, title }` for a raw status string.
+// `title` is `null` when the input fits within the cap (so callers
+// can clear any existing title attribute) and the full input when
+// truncation happened. Splits on code points via `Array.from` rather
+// than UTF-16 units so a multi-byte emoji landing on the cut boundary
+// does not leave a malformed surrogate followed by the ellipsis.
+function truncateStatus(raw) {
+  const text = raw ?? "";
+  const chars = Array.from(text);
+  if (chars.length <= MAX_STATUS_CHARS) {
+    return { text, title: null };
+  }
+  return {
+    text: `${chars.slice(0, MAX_STATUS_CHARS - 1).join("")}…`,
+    title: text,
+  };
+}
+
 // Errors get `role="alert"` + `aria-live="assertive"` so screen readers
 // announce them immediately; informational status uses the politer
 // `role="status"` + `aria-live="polite"` (defers to current activity).
@@ -46,7 +73,13 @@ const state = {
 // from the HTML would otherwise override the `role="alert"` implicit
 // assertiveness and downgrade error announcements to polite.
 function setStatus(text, kind) {
-  elements.status.textContent = text ?? "";
+  const { text: visible, title } = truncateStatus(text);
+  elements.status.textContent = visible;
+  if (title === null) {
+    elements.status.removeAttribute("title");
+  } else {
+    elements.status.title = title;
+  }
   if (kind === "error") {
     elements.status.classList.add("error");
     elements.status.setAttribute("role", "alert");

@@ -17,8 +17,10 @@ import { buildPopupDom } from "./helpers/popup-dom.js";
 const EXPOSED = [
   "ALL_STORES",
   "MAX_REMEMBERED_HOSTS",
+  "MAX_STATUS_CHARS",
   "STORE_MEMORY_PREFIX",
   "STORE_MEMORY_INDEX_KEY",
+  "truncateStatus",
   "setStatus",
   "sendBackground",
   "activeHostname",
@@ -169,6 +171,85 @@ describe("popup.js", () => {
     });
   });
 
+  describe("truncateStatus (pure helper, item P)", () => {
+    it("returns empty text and no title for null input", async () => {
+      const { popup } = await setUp();
+      expect(popup.truncateStatus(null)).toEqual({ text: "", title: null });
+    });
+
+    it("returns empty text and no title for undefined input", async () => {
+      const { popup } = await setUp();
+      expect(popup.truncateStatus(undefined)).toEqual({
+        text: "",
+        title: null,
+      });
+    });
+
+    it("returns empty text and no title for an empty string", async () => {
+      const { popup } = await setUp();
+      expect(popup.truncateStatus("")).toEqual({ text: "", title: null });
+    });
+
+    it("passes a short string through unchanged with no title", async () => {
+      const { popup } = await setUp();
+      expect(popup.truncateStatus("hello")).toEqual({
+        text: "hello",
+        title: null,
+      });
+    });
+
+    it("passes a string at exactly the cap through unchanged", async () => {
+      const { popup } = await setUp();
+      const exact = "a".repeat(popup.MAX_STATUS_CHARS);
+      expect(popup.truncateStatus(exact)).toEqual({ text: exact, title: null });
+    });
+
+    it("truncates a string one over the cap and preserves the original as the title", async () => {
+      const { popup } = await setUp();
+      const over = "a".repeat(popup.MAX_STATUS_CHARS + 1);
+      const { text, title } = popup.truncateStatus(over);
+      expect(Array.from(text)).toHaveLength(popup.MAX_STATUS_CHARS);
+      expect(text.endsWith("…")).toBe(true);
+      expect(title).toBe(over);
+    });
+
+    it("truncates a very long string to exactly MAX_STATUS_CHARS code points (including the ellipsis)", async () => {
+      const { popup } = await setUp();
+      const huge = "x".repeat(2000);
+      const { text, title } = popup.truncateStatus(huge);
+      expect(Array.from(text)).toHaveLength(popup.MAX_STATUS_CHARS);
+      expect(text.endsWith("…")).toBe(true);
+      expect(title).toBe(huge);
+    });
+
+    it("treats surrogate-pair emoji as single code points so the boundary doesn't split a glyph", async () => {
+      const { popup } = await setUp();
+      // 200 key-emoji characters: each emoji is 1 code point but 2
+      // UTF-16 units, so a naive `.slice` would break the cut.
+      const text = "🔑".repeat(200);
+      const result = popup.truncateStatus(text);
+      const codepoints = Array.from(result.text);
+      expect(codepoints).toHaveLength(popup.MAX_STATUS_CHARS);
+      // The trailing character is the ellipsis, and every other
+      // character is the full emoji (no half-surrogates leaked).
+      expect(codepoints[codepoints.length - 1]).toBe("…");
+      for (let i = 0; i < codepoints.length - 1; i += 1) {
+        expect(codepoints[i]).toBe("🔑");
+      }
+      expect(result.title).toBe(text);
+    });
+
+    it("does NOT truncate an emoji-only string whose code-point length fits the cap (UTF-16 length would over-count)", async () => {
+      const { popup } = await setUp();
+      // Each emoji is 2 UTF-16 units; MAX_STATUS_CHARS emoji = 2 * MAX
+      // UTF-16 units. The function counts code points, not units.
+      const text = "🔑".repeat(popup.MAX_STATUS_CHARS);
+      const result = popup.truncateStatus(text);
+      expect(result.text).toBe(text);
+      expect(result.title).toBeNull();
+    });
+  });
+
   describe("setStatus", () => {
     it("writes the message and resets to status role for informational text", async () => {
       const { popup } = await setUp();
@@ -192,6 +273,31 @@ describe("popup.js", () => {
       popup.setStatus("first");
       popup.setStatus();
       expect(popup.elements.status.textContent).toBe("");
+    });
+
+    it("does not set a title attribute for short messages (item P)", async () => {
+      const { popup } = await setUp();
+      popup.setStatus("short message");
+      expect(popup.elements.status.hasAttribute("title")).toBe(false);
+    });
+
+    it("truncates long messages in textContent and stashes the full text in the title attribute", async () => {
+      const { popup } = await setUp();
+      const longMessage = `boom ${"a".repeat(popup.MAX_STATUS_CHARS + 50)}`;
+      popup.setStatus(longMessage, "error");
+      expect(
+        Array.from(popup.elements.status.textContent),
+      ).toHaveLength(popup.MAX_STATUS_CHARS);
+      expect(popup.elements.status.textContent.endsWith("…")).toBe(true);
+      expect(popup.elements.status.getAttribute("title")).toBe(longMessage);
+    });
+
+    it("removes a stale title attribute when a long message is replaced by a short one", async () => {
+      const { popup } = await setUp();
+      popup.setStatus("z".repeat(popup.MAX_STATUS_CHARS + 50), "error");
+      expect(popup.elements.status.hasAttribute("title")).toBe(true);
+      popup.setStatus("short again");
+      expect(popup.elements.status.hasAttribute("title")).toBe(false);
     });
   });
 

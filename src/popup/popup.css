@@ -84,6 +84,17 @@ body {
   color: var(--muted);
   font-size: 12px;
   min-height: 18px;
+  /* Belt-and-braces visual cap on the status height: even after the
+     JS truncation in `setStatus`, an unusually long word or a font
+     fallback could still push the rendered block past a couple of
+     lines and shove the results below the fold. `-webkit-line-clamp`
+     is honoured by every Chromium browser and by Firefox ≥68. The
+     `display: -webkit-box` switch is what makes the clamp take
+     effect; both rules are required as a pair. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .status.error {
