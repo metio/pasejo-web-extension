@@ -61,7 +61,12 @@ function makeVisibleInput(
   if (attached) {
     document.body.appendChild(input);
   }
-  Object.defineProperty(input, "getBoundingClientRect", {
+  stubRect(input, rect);
+  return input;
+}
+
+function stubRect(el, rect = {}) {
+  Object.defineProperty(el, "getBoundingClientRect", {
     value: () => ({
       width: 200,
       height: 30,
@@ -73,7 +78,32 @@ function makeVisibleInput(
     }),
     configurable: true,
   });
-  return input;
+  return el;
+}
+
+// Attach an open (default) or closed shadow root to a fresh host
+// inserted into document.body, and place an input of the given type
+// inside it. Returns the host, shadow root, and the input itself so
+// tests can assert on each.
+function attachShadowInput(
+  type,
+  { mode = "open", props = {}, rect = {} } = {},
+) {
+  const host = document.createElement("div");
+  const shadow = host.attachShadow({ mode });
+  const input = document.createElement("input");
+  input.type = type;
+  for (const [k, v] of Object.entries(props)) {
+    if (k.startsWith("attr:")) {
+      input.setAttribute(k.slice(5), v);
+    } else {
+      input[k] = v;
+    }
+  }
+  shadow.appendChild(input);
+  document.body.appendChild(host);
+  stubRect(input, rect);
+  return { host, shadow, input };
 }
 
 describe("fill.js content script", () => {
@@ -602,6 +632,170 @@ describe("fill.js content script", () => {
       expect(password.style.outline).toContain("red");
       expect(password.style.outline).toContain("1px");
       expect(password.style.outlineOffset).toBe("4px");
+    });
+  });
+
+  describe("shadow DOM (item M)", () => {
+    it("finds and fills a password input inside an open shadow root", async () => {
+      const { input: password } = attachShadowInput("password");
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(true);
+      expect(reply.filled.password).toBe(true);
+      expect(password.value).toBe("hunter2");
+    });
+
+    it("descends through nested shadow roots", async () => {
+      const outer = document.createElement("div");
+      const outerShadow = outer.attachShadow({ mode: "open" });
+      const inner = document.createElement("div");
+      const innerShadow = inner.attachShadow({ mode: "open" });
+      const password = document.createElement("input");
+      password.type = "password";
+      innerShadow.appendChild(password);
+      outerShadow.appendChild(inner);
+      document.body.appendChild(outer);
+      stubRect(password);
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(true);
+      expect(password.value).toBe("hunter2");
+    });
+
+    it("cannot see into a closed shadow root, and surfaces 'no password' to the popup", async () => {
+      const { input: hidden } = attachShadowInput("password", {
+        mode: "closed",
+      });
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(false);
+      expect(reply.error).toMatch(/No password input found/);
+      expect(hidden.value).toBe("");
+    });
+
+    it("prefers a focused shadow-DOM input over a non-focused light-DOM input", async () => {
+      const offscreenVisible = makeVisibleInput("password", {
+        rect: { top: 10, bottom: 40 },
+      });
+      const { input: focusedShadow } = attachShadowInput("password", {
+        rect: { top: 2000, bottom: 2030 },
+      });
+      focusedShadow.focus();
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(true);
+      // Without `activeElementDeep` the picker would treat the shadow
+      // host as the focused element and fall back to viewport ranking,
+      // which would pick the visible light-DOM input instead.
+      expect(focusedShadow.value).toBe("hunter2");
+      expect(offscreenVisible.value).toBe("");
+    });
+
+    it("walks down two levels of nested shadow roots to find the truly focused field", async () => {
+      const outer = document.createElement("div");
+      const outerShadow = outer.attachShadow({ mode: "open" });
+      const inner = document.createElement("div");
+      const innerShadow = inner.attachShadow({ mode: "open" });
+      const deepPassword = document.createElement("input");
+      deepPassword.type = "password";
+      innerShadow.appendChild(deepPassword);
+      outerShadow.appendChild(inner);
+      document.body.appendChild(outer);
+      stubRect(deepPassword, { top: 1500, bottom: 1530 });
+      const visibleDecoy = makeVisibleInput("password", {
+        rect: { top: 5, bottom: 35 },
+      });
+      deepPassword.focus();
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(true);
+      expect(deepPassword.value).toBe("hunter2");
+      expect(visibleDecoy.value).toBe("");
+    });
+
+    it("falls back to viewport ranking when nothing is focused, across shadow boundaries", async () => {
+      const { input: offscreen } = attachShadowInput("password", {
+        rect: { top: 3000, bottom: 3030 },
+      });
+      const { input: visible } = attachShadowInput("password", {
+        rect: { top: 20, bottom: 50 },
+      });
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(true);
+      expect(visible.value).toBe("hunter2");
+      expect(offscreen.value).toBe("");
+    });
+
+    it("fills username + password living together inside an open shadow root", async () => {
+      const host = document.createElement("div");
+      const shadow = host.attachShadow({ mode: "open" });
+      const username = document.createElement("input");
+      username.type = "text";
+      username.name = "username";
+      shadow.appendChild(username);
+      const password = document.createElement("input");
+      password.type = "password";
+      shadow.appendChild(password);
+      document.body.appendChild(host);
+      stubRect(username);
+      stubRect(password);
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(true);
+      expect(reply.filled).toEqual({ username: true, password: true });
+      expect(username.value).toBe("alice");
+      expect(password.value).toBe("hunter2");
+    });
+
+    it("partial-fill (no password input on page) reaches a username inside a shadow root", async () => {
+      const { input: email } = attachShadowInput("email", {
+        props: { name: "email" },
+      });
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice@example.com",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(true);
+      expect(reply.filled).toEqual({ username: true, password: false });
+      expect(email.value).toBe("alice@example.com");
+    });
+
+    it("cross-tree username candidate (DISCONNECTED compareDocumentPosition) is still selectable as the first fallback", async () => {
+      // Password lives in one shadow tree; the username candidate lives
+      // in a sibling shadow tree. `compareDocumentPosition` between two
+      // nodes in different trees returns DOCUMENT_POSITION_DISCONNECTED,
+      // so the "preceding candidate" filter drops it. We expect to fall
+      // through to `candidates[0]` and still fill the username.
+      const { input: username } = attachShadowInput("text", {
+        props: { name: "username" },
+      });
+      const { input: password } = attachShadowInput("password");
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(true);
+      expect(reply.filled.username).toBe(true);
+      expect(username.value).toBe("alice");
+      expect(password.value).toBe("hunter2");
     });
   });
 

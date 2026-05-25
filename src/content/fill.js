@@ -60,8 +60,9 @@
   }
 
   function findPasswordInput() {
-    const candidates = Array.from(
-      document.querySelectorAll('input[type="password"]'),
+    const candidates = queryAllDeep(
+      document,
+      'input[type="password"]',
     ).filter(isInteractable);
     if (candidates.length === 0) {
       return null;
@@ -69,7 +70,7 @@
     // Prefer the currently focused field. Otherwise rank by viewport
     // visibility so a hidden-deep-in-the-page "change password" form
     // doesn't win over a visible login form sitting above the fold.
-    const focused = document.activeElement;
+    const focused = activeElementDeep();
     if (focused && candidates.includes(focused)) {
       return focused;
     }
@@ -81,9 +82,16 @@
   // to the previous visible input that looks like a username.
   function findUsernameInputFor(passwordInput) {
     const form = passwordInput.form;
+    // `form.elements` only sees regular form-associated inputs, not
+    // those buried in a shadow root inside the form. For the form
+    // case we accept that limitation (custom elements that own their
+    // own form-associated inputs are rare); for the form-less case
+    // (the common shadow-DOM scenario — the input has no `.form`
+    // because the host is in a shadow tree) we walk every shadow
+    // root reachable from the document.
     const pool = form
       ? Array.from(form.elements).filter((el) => el instanceof HTMLInputElement)
-      : Array.from(document.querySelectorAll("input"));
+      : queryAllDeep(document, "input");
     const candidates = pool.filter(
       (el) => el !== passwordInput && isInteractable(el) && looksLikeUsername(el),
     );
@@ -92,6 +100,11 @@
     }
     // If the password input came after a candidate in document order, prefer
     // the closest preceding candidate; otherwise take the first.
+    // `compareDocumentPosition` returns 0 (DISCONNECTED) when the two
+    // nodes live in different shadow trees, which makes both nodes look
+    // "neither before nor after"; the `before` filter naturally drops
+    // them and we fall through to the first candidate. The trade-off is
+    // acceptable for now — cross-shadow-root match-ups are rare.
     const before = candidates.filter(
       (el) =>
         el.compareDocumentPosition(passwordInput) &
@@ -107,18 +120,46 @@
   // first step of a multi-step login). Same focused → viewport-visible
   // → first-in-document ranking as the password search.
   function findStandaloneUsernameInput() {
-    const candidates = Array.from(document.querySelectorAll("input")).filter(
+    const candidates = queryAllDeep(document, "input").filter(
       (el) => isInteractable(el) && looksLikeUsername(el),
     );
     if (candidates.length === 0) {
       return null;
     }
-    const focused = document.activeElement;
+    const focused = activeElementDeep();
     if (focused && candidates.includes(focused)) {
       return focused;
     }
     candidates.sort((a, b) => visibilityScore(b) - visibilityScore(a));
     return candidates[0];
+  }
+
+  // Recursive `querySelectorAll` that descends into every open shadow
+  // root reachable from `root`. Closed shadow roots cannot be inspected
+  // by outside JS — including content scripts running in their isolated
+  // world — and are silently skipped; a site that hides its login form
+  // inside a closed shadow root effectively opts out of autofill.
+  function queryAllDeep(root, selector) {
+    const matches = Array.from(root.querySelectorAll(selector));
+    for (const el of root.querySelectorAll("*")) {
+      if (el.shadowRoot) {
+        matches.push(...queryAllDeep(el.shadowRoot, selector));
+      }
+    }
+    return matches;
+  }
+
+  // `document.activeElement` reports the *shadow host* when focus is
+  // inside a shadow tree, not the actually-focused inner element.
+  // Walking down through `shadowRoot.activeElement` recovers the real
+  // focus target, so the "prefer focused candidate" rule survives
+  // shadow boundaries.
+  function activeElementDeep() {
+    let active = document.activeElement;
+    while (active?.shadowRoot?.activeElement) {
+      active = active.shadowRoot.activeElement;
+    }
+    return active;
   }
 
   // Fraction of the element's bounding box that lies inside the
