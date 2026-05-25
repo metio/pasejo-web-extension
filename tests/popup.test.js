@@ -16,6 +16,9 @@ import { buildPopupDom } from "./helpers/popup-dom.js";
 
 const EXPOSED = [
   "ALL_STORES",
+  "MAX_REMEMBERED_HOSTS",
+  "STORE_MEMORY_PREFIX",
+  "STORE_MEMORY_INDEX_KEY",
   "setStatus",
   "sendBackground",
   "activeHostname",
@@ -26,6 +29,8 @@ const EXPOSED = [
   "pickPreferredStore",
   "rememberStoreForHost",
   "recallStoreForHost",
+  "touchHostInIndex",
+  "dropHostFromIndex",
   "renderHostError",
   "runQuery",
   "runMultiStoreQuery",
@@ -514,6 +519,162 @@ describe("popup.js", () => {
       const { api, popup } = await setUp();
       api.storage.local.get.mockRejectedValueOnce(new Error("disk gone"));
       await expect(popup.recallStoreForHost("example.com")).resolves.toBeNull();
+    });
+  });
+
+  describe("per-host memory eviction (item N)", () => {
+    it("appends new hosts to the index in touch order", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({
+          [popup.STORE_MEMORY_INDEX_KEY]: ["example.com"],
+        })
+        .mockResolvedValueOnce({
+          [popup.STORE_MEMORY_INDEX_KEY]: ["example.com", "github.com"],
+        });
+      await popup.rememberStoreForHost("example.com", "a");
+      await popup.rememberStoreForHost("github.com", "a");
+      await popup.rememberStoreForHost("gitlab.com", "a");
+      expect(api.storage.local.set).toHaveBeenCalledWith({
+        [popup.STORE_MEMORY_INDEX_KEY]: ["example.com"],
+      });
+      expect(api.storage.local.set).toHaveBeenCalledWith({
+        [popup.STORE_MEMORY_INDEX_KEY]: ["example.com", "github.com"],
+      });
+      expect(api.storage.local.set).toHaveBeenCalledWith({
+        [popup.STORE_MEMORY_INDEX_KEY]: ["example.com", "github.com", "gitlab.com"],
+      });
+    });
+
+    it("re-touching an existing host moves it to the end without duplicating", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.STORE_MEMORY_INDEX_KEY]: ["a.test", "b.test", "c.test"],
+      });
+      await popup.rememberStoreForHost("a.test", "personal");
+      expect(api.storage.local.set).toHaveBeenCalledWith({
+        [popup.STORE_MEMORY_INDEX_KEY]: ["b.test", "c.test", "a.test"],
+      });
+    });
+
+    it("treats a missing index key as empty", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({}); // no index key
+      await popup.rememberStoreForHost("new.test", "personal");
+      expect(api.storage.local.set).toHaveBeenCalledWith({
+        [popup.STORE_MEMORY_INDEX_KEY]: ["new.test"],
+      });
+    });
+
+    it("treats a corrupt (non-array) index value as empty", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.STORE_MEMORY_INDEX_KEY]: "i-am-broken",
+      });
+      await popup.rememberStoreForHost("new.test", "personal");
+      expect(api.storage.local.set).toHaveBeenCalledWith({
+        [popup.STORE_MEMORY_INDEX_KEY]: ["new.test"],
+      });
+    });
+
+    it("evicts the oldest host (and its storage entry) when the cap is exceeded", async () => {
+      const { api, popup } = await setUp();
+      // Seed a full index. Touching a brand-new host pushes the cap
+      // over and must drop the front of the index — both from the
+      // index itself and from `chrome.storage.local`.
+      const fullIndex = Array.from(
+        { length: popup.MAX_REMEMBERED_HOSTS },
+        (_, i) => `host${i}.test`,
+      );
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.STORE_MEMORY_INDEX_KEY]: [...fullIndex],
+      });
+      await popup.rememberStoreForHost("new.test", "personal");
+      expect(api.storage.local.remove).toHaveBeenCalledWith(
+        `${popup.STORE_MEMORY_PREFIX}host0.test`,
+      );
+      const expectedIndex = [
+        ...Array.from(
+          { length: popup.MAX_REMEMBERED_HOSTS - 1 },
+          (_, i) => `host${i + 1}.test`,
+        ),
+        "new.test",
+      ];
+      expect(api.storage.local.set).toHaveBeenCalledWith({
+        [popup.STORE_MEMORY_INDEX_KEY]: expectedIndex,
+      });
+    });
+
+    it("evicts every overflowing host in one call when the seed index is multiple over the cap", async () => {
+      const { api, popup } = await setUp();
+      // An index that is two over the cap (could happen after a manual
+      // import or a cap change in a future release) must be trimmed
+      // back to exactly `MAX_REMEMBERED_HOSTS` entries in one go.
+      const overflowIndex = Array.from(
+        { length: popup.MAX_REMEMBERED_HOSTS + 1 },
+        (_, i) => `host${i}.test`,
+      );
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.STORE_MEMORY_INDEX_KEY]: [...overflowIndex],
+      });
+      await popup.rememberStoreForHost("new.test", "personal");
+      expect(api.storage.local.remove).toHaveBeenCalledWith(
+        `${popup.STORE_MEMORY_PREFIX}host0.test`,
+      );
+      expect(api.storage.local.remove).toHaveBeenCalledWith(
+        `${popup.STORE_MEMORY_PREFIX}host1.test`,
+      );
+      // After two evictions the surviving index has exactly the cap's
+      // worth of entries — `MAX_REMEMBERED_HOSTS - 1` originals plus
+      // the new one.
+      const indexCall = api.storage.local.set.mock.calls.find(
+        ([arg]) => popup.STORE_MEMORY_INDEX_KEY in arg,
+      );
+      expect(indexCall[0][popup.STORE_MEMORY_INDEX_KEY]).toHaveLength(
+        popup.MAX_REMEMBERED_HOSTS,
+      );
+    });
+
+    it("removes the host from the index when the store is cleared", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.STORE_MEMORY_INDEX_KEY]: ["a.test", "b.test", "c.test"],
+      });
+      await popup.rememberStoreForHost("b.test", "");
+      expect(api.storage.local.remove).toHaveBeenCalledWith(
+        `${popup.STORE_MEMORY_PREFIX}b.test`,
+      );
+      expect(api.storage.local.set).toHaveBeenCalledWith({
+        [popup.STORE_MEMORY_INDEX_KEY]: ["a.test", "c.test"],
+      });
+    });
+
+    it("clearing a host that was never in the index does not rewrite it", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.STORE_MEMORY_INDEX_KEY]: ["a.test", "b.test"],
+      });
+      await popup.rememberStoreForHost("never-seen.test", "");
+      // The host entry remove call always fires; the index set call
+      // must NOT because nothing in the index changed.
+      expect(api.storage.local.remove).toHaveBeenCalledWith(
+        `${popup.STORE_MEMORY_PREFIX}never-seen.test`,
+      );
+      const indexWrites = api.storage.local.set.mock.calls.filter(
+        ([arg]) => popup.STORE_MEMORY_INDEX_KEY in arg,
+      );
+      expect(indexWrites).toHaveLength(0);
+    });
+
+    it("clearing a host when the index is missing/corrupt is a no-op", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({});
+      await popup.rememberStoreForHost("a.test", "");
+      const indexWrites = api.storage.local.set.mock.calls.filter(
+        ([arg]) => popup.STORE_MEMORY_INDEX_KEY in arg,
+      );
+      expect(indexWrites).toHaveLength(0);
     });
   });
 

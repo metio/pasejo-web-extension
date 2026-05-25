@@ -216,6 +216,23 @@ async function pickPreferredStore(stores, hostname) {
 // for v1 and matches what most users expect anyway.
 const STORE_MEMORY_PREFIX = "store-for-host:";
 
+// Soft cap on the number of hosts whose store choice we remember.
+// chrome.storage.local's quota is 5 MB, and each entry is on the order
+// of fifty bytes, so the quota itself sits at ~100K entries — but
+// letting the map grow unbounded is a code smell and lets a never-used
+// browser profile silently accumulate every site the user has ever
+// visited. 500 covers any realistic site list with headroom; once the
+// cap is reached, the host that was longest ago touched falls off the
+// front of the index whenever a new host is added.
+const MAX_REMEMBERED_HOSTS = 500;
+
+// Tracks the eviction order for the host→store memory. Element 0 is
+// the next host to be evicted; the last element is the host most
+// recently written. The index lives under a fixed key whose prefix
+// cannot collide with a literal hostname (those all live under
+// `STORE_MEMORY_PREFIX`).
+const STORE_MEMORY_INDEX_KEY = "pasejo:host-store-index";
+
 async function rememberStoreForHost(hostname, storeName) {
   if (!hostname || !api.storage?.local) {
     return;
@@ -224,13 +241,47 @@ async function rememberStoreForHost(hostname, storeName) {
   try {
     if (storeName) {
       await api.storage.local.set({ [key]: storeName });
+      await touchHostInIndex(hostname);
     } else {
       await api.storage.local.remove(key);
+      await dropHostFromIndex(hostname);
     }
   } catch (_) {
     // Storage write failures are non-fatal — the user just doesn't get
     // the per-host memory until storage works again.
   }
+}
+
+// Bumps `hostname` to the most-recent end of the eviction index and
+// removes from storage any hosts that overflow the cap. The index and
+// each per-host entry live in the same `chrome.storage.local` so the
+// state survives popup teardown without any in-memory bookkeeping.
+async function touchHostInIndex(hostname) {
+  const existing = await api.storage.local.get(STORE_MEMORY_INDEX_KEY);
+  const raw = existing[STORE_MEMORY_INDEX_KEY];
+  // A non-array value (missing key, or corrupted previous write) is
+  // treated as an empty index — we'd rather lose one cycle of eviction
+  // memory than refuse to write.
+  const index = (Array.isArray(raw) ? raw : []).filter((h) => h !== hostname);
+  index.push(hostname);
+  while (index.length > MAX_REMEMBERED_HOSTS) {
+    const evicted = index.shift();
+    await api.storage.local.remove(STORE_MEMORY_PREFIX + evicted);
+  }
+  await api.storage.local.set({ [STORE_MEMORY_INDEX_KEY]: index });
+}
+
+async function dropHostFromIndex(hostname) {
+  const existing = await api.storage.local.get(STORE_MEMORY_INDEX_KEY);
+  const raw = existing[STORE_MEMORY_INDEX_KEY];
+  if (!Array.isArray(raw)) {
+    return;
+  }
+  const index = raw.filter((h) => h !== hostname);
+  if (index.length === raw.length) {
+    return;
+  }
+  await api.storage.local.set({ [STORE_MEMORY_INDEX_KEY]: index });
 }
 
 async function recallStoreForHost(hostname) {
