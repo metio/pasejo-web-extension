@@ -54,6 +54,20 @@ async function flushAsync() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+// Externally-controllable promise for racing two runQuery flows in a
+// deterministic order: capture a `deferred()`, hand its `.promise`
+// to a `mockReturnValueOnce`, then call `resolve()` whenever the test
+// is ready for that response to arrive.
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 // popup.js calls `main()` immediately on load — there is no
 // "don't autostart" knob. `setUp` therefore lets that initial main()
 // settle against a benign default mock, then drains all call history so
@@ -1071,6 +1085,232 @@ describe("popup.js", () => {
       resolveReply({ ok: true, response: { results: [] } });
       await vi.runAllTimersAsync();
       await queryDone;
+    });
+  });
+
+  describe("stale-result suppression (item J)", () => {
+    it("bumps state.queryGeneration on every runQuery call", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = "personal";
+      api.runtime.sendMessage.mockResolvedValue({
+        ok: true,
+        response: { results: [] },
+      });
+      const before = popup.state.queryGeneration;
+      await popup.runQuery();
+      const afterOne = popup.state.queryGeneration;
+      await popup.runQuery();
+      const afterTwo = popup.state.queryGeneration;
+      expect(afterOne).toBe(before + 1);
+      expect(afterTwo).toBe(before + 2);
+    });
+
+    it("drops a late single-store success that lost the race to a fresher call", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = "personal";
+      const d1 = deferred();
+      const d2 = deferred();
+      api.runtime.sendMessage
+        .mockReturnValueOnce(d1.promise)
+        .mockReturnValueOnce(d2.promise);
+      const q1 = popup.runQuery();
+      const q2 = popup.runQuery();
+      d2.resolve({
+        ok: true,
+        response: {
+          results: [{ name: "fresh", match_kind: "name", score: 0.5 }],
+        },
+      });
+      // Wait for q2's render to land before letting q1's stale reply
+      // arrive, so the test mirrors the bug's worst case: stale data
+      // arriving AFTER fresh data has already painted.
+      await flushAsync();
+      d1.resolve({
+        ok: true,
+        response: {
+          results: [{ name: "stale", match_kind: "name", score: 0.5 }],
+        },
+      });
+      await Promise.all([q1, q2]);
+      const names = Array.from(
+        popup.elements.results.querySelectorAll(".name"),
+      ).map((n) => n.textContent);
+      expect(names).toEqual(["fresh"]);
+    });
+
+    it("drops a late host-error reply that arrives after fresh results have rendered", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = "personal";
+      const d1 = deferred();
+      const d2 = deferred();
+      api.runtime.sendMessage
+        .mockReturnValueOnce(d1.promise)
+        .mockReturnValueOnce(d2.promise);
+      const q1 = popup.runQuery();
+      const q2 = popup.runQuery();
+      d2.resolve({
+        ok: true,
+        response: {
+          results: [{ name: "alice", match_kind: "name", score: 0.5 }],
+        },
+      });
+      await flushAsync();
+      d1.resolve({
+        ok: true,
+        response: { error: "identity_locked" },
+      });
+      await Promise.all([q1, q2]);
+      // Status should still reflect the fresh success ("1 match.") not
+      // the stale identity-locked error from q1.
+      expect(popup.elements.status.textContent).toMatch(/1 match/);
+      expect(popup.elements.status.classList.contains("error")).toBe(false);
+    });
+
+    it("drops a late transport error that arrives after fresh results have rendered", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = "personal";
+      const d1 = deferred();
+      const d2 = deferred();
+      api.runtime.sendMessage
+        .mockReturnValueOnce(d1.promise)
+        .mockReturnValueOnce(d2.promise);
+      const q1 = popup.runQuery();
+      const q2 = popup.runQuery();
+      d2.resolve({
+        ok: true,
+        response: {
+          results: [{ name: "alice", match_kind: "name", score: 0.5 }],
+        },
+      });
+      await flushAsync();
+      // The stale call's sendBackground rejects after fresh has
+      // already rendered — without the gate, this would surface a
+      // "Could not reach the host: …" alert and overwrite the success.
+      d1.reject(new Error("host crashed"));
+      await Promise.all([q1, q2]);
+      expect(popup.elements.status.textContent).toMatch(/1 match/);
+      expect(popup.elements.status.classList.contains("error")).toBe(false);
+    });
+
+    it("drops a late malformed-results reply that arrives after fresh results have rendered", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = "personal";
+      const d1 = deferred();
+      const d2 = deferred();
+      api.runtime.sendMessage
+        .mockReturnValueOnce(d1.promise)
+        .mockReturnValueOnce(d2.promise);
+      const q1 = popup.runQuery();
+      const q2 = popup.runQuery();
+      d2.resolve({
+        ok: true,
+        response: {
+          results: [{ name: "alice", match_kind: "name", score: 0.5 }],
+        },
+      });
+      await flushAsync();
+      d1.resolve({ ok: true, response: { results: "broken" } });
+      await Promise.all([q1, q2]);
+      expect(popup.elements.status.textContent).toMatch(/1 match/);
+      expect(popup.elements.status.classList.contains("error")).toBe(false);
+    });
+
+    it("drops a late multi-store fan-out that arrives after fresh results have rendered", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }, { name: "b" }];
+      // q1 fans out to both stores via two sendBackground calls; we
+      // capture both. q2 also fans out; we capture both. Tracking
+      // which mock-returned promise feeds which runQuery is fiddly,
+      // so instead we set q1 up to use deferred promises (so it never
+      // resolves until we say so) and q2 to use immediately-resolved
+      // good replies.
+      const d1a = deferred();
+      const d1b = deferred();
+      api.runtime.sendMessage
+        // q1's first store:
+        .mockReturnValueOnce(d1a.promise)
+        // q1's second store:
+        .mockReturnValueOnce(d1b.promise)
+        // q2's two stores:
+        .mockResolvedValueOnce({
+          ok: true,
+          response: {
+            results: [{ name: "fresh-a", match_kind: "name", score: 0.9 }],
+          },
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          response: {
+            results: [{ name: "fresh-b", match_kind: "name", score: 0.7 }],
+          },
+        });
+      const q1 = popup.runQuery();
+      const q2 = popup.runQuery();
+      // Wait for q2 to finish rendering.
+      await flushAsync();
+      await flushAsync();
+      // Now let q1's stale fan-out complete.
+      d1a.resolve({
+        ok: true,
+        response: {
+          results: [{ name: "stale-a", match_kind: "name", score: 0.9 }],
+        },
+      });
+      d1b.resolve({
+        ok: true,
+        response: {
+          results: [{ name: "stale-b", match_kind: "name", score: 0.7 }],
+        },
+      });
+      await Promise.all([q1, q2]);
+      const names = Array.from(
+        popup.elements.results.querySelectorAll(".name"),
+      ).map((n) => n.textContent);
+      // Fresh results only — the stale a/b must not have been added.
+      expect(names.sort()).toEqual(["fresh-a", "fresh-b"]);
+    });
+
+    it("suppresses the 'Searching…' timer when the generation has moved on", async () => {
+      const { api, popup } = await setUp();
+      vi.useFakeTimers();
+      popup.state.domain = "example.com";
+      popup.state.store = "personal";
+      // Pin sendMessage so q1 never settles on its own.
+      api.runtime.sendMessage.mockReturnValueOnce(new Promise(() => {}));
+      const q1 = popup.runQuery();
+      // Manually bump the generation as if a fresher runQuery had
+      // started (this is what the change-handler / refresh-handler
+      // path would have done under real load).
+      popup.state.queryGeneration += 1;
+      await vi.advanceTimersByTimeAsync(250);
+      // Without the gate the q1 timer would set
+      // "Searching for example.com…"; with the gate it bails first.
+      expect(popup.elements.status.textContent).toBe("");
+      // Don't `await q1` — it never resolves because sendMessage
+      // never returns. vitest tears the fake-timer context down for
+      // us after the test.
+      void q1;
+    });
+
+    it("still updates the status when the timer is NOT stale (positive control)", async () => {
+      const { api, popup } = await setUp();
+      vi.useFakeTimers();
+      popup.state.domain = "example.com";
+      popup.state.store = "personal";
+      api.runtime.sendMessage.mockReturnValueOnce(new Promise(() => {}));
+      const q1 = popup.runQuery();
+      // Don't bump the generation — q1 is still the freshest.
+      await vi.advanceTimersByTimeAsync(250);
+      expect(popup.elements.status.textContent).toMatch(/Searching/);
+      void q1;
     });
   });
 

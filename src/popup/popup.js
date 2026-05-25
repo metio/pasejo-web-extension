@@ -37,6 +37,14 @@ const state = {
   // event whose dispatch had already begun isn't suppressed by the
   // disabled property.
   refreshing: false,
+  // Monotonically-increasing identifier handed out by `runQuery`. Each
+  // `runQuery` invocation bumps this and snapshots the new value; any
+  // side effect (status update, results render) it tries to apply
+  // after an await first re-reads the field and bails when it no
+  // longer matches. Stops a slower first query from overwriting the
+  // results of a faster second query that came in via the change /
+  // refresh handler.
+  queryGeneration: 0,
 };
 
 // Status messages above this many characters get visibly truncated
@@ -349,6 +357,11 @@ function renderHostError(reply) {
 }
 
 async function runQuery() {
+  // Snapshot the generation up front: every side effect below first
+  // re-reads `state.queryGeneration` and bails when it no longer
+  // matches. Stops a slower first query from clobbering a fresher
+  // second query that came in via the change / refresh handler.
+  const generation = ++state.queryGeneration;
   elements.results.replaceChildren();
   if (!state.domain) {
     setStatus("No domain for the active tab — nothing to search.");
@@ -358,12 +371,15 @@ async function runQuery() {
   // on screen for a few frames before the results overwrite it. Slow
   // hosts (>250 ms) still get user feedback.
   const searchingTimer = setTimeout(() => {
+    if (generation !== state.queryGeneration) {
+      return;
+    }
     setStatus(`Searching for ${state.domain}…`);
   }, 250);
 
   try {
     if (state.store === ALL_STORES) {
-      await runMultiStoreQuery();
+      await runMultiStoreQuery(generation);
       return;
     }
 
@@ -375,7 +391,13 @@ async function runQuery() {
         store: state.store,
       });
     } catch (err) {
+      if (generation !== state.queryGeneration) {
+        return;
+      }
       setStatus(`Could not reach the host: ${err.message}`, "error");
+      return;
+    }
+    if (generation !== state.queryGeneration) {
       return;
     }
     if (reply.error) {
@@ -395,7 +417,7 @@ async function runQuery() {
   }
 }
 
-async function runMultiStoreQuery() {
+async function runMultiStoreQuery(generation) {
   if (state.stores.length === 0) {
     setStatus("No stores to search.", "error");
     return;
@@ -428,6 +450,9 @@ async function runMultiStoreQuery() {
       }
     }),
   );
+  if (generation !== state.queryGeneration) {
+    return;
+  }
   const matches = attempts.flatMap((a) => a.results);
   // Each store's results are already sorted by score (the host does it);
   // the merged list needs one more sort across stores.
