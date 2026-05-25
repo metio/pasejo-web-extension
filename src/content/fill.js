@@ -10,9 +10,18 @@
   // The pickers below are intentionally conservative: nothing fires
   // until the popup explicitly sends `{type: "fill"}`. The page never
   // sees credentials on load and never sees them in response to focus or
-  // navigation events.
+  // navigation events. `probe-focus` is a read-only query the popup
+  // sends to every frame before a fill so it can prefer the
+  // user-intended target — no DOM mutation, no credential exposure.
   api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!message || message.type !== "fill") {
+    if (!message) {
+      return false;
+    }
+    if (message.type === "probe-focus") {
+      sendResponse({ ok: true, focused: document.hasFocus() });
+      return false;
+    }
+    if (message.type !== "fill") {
       return false;
     }
     try {

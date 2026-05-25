@@ -628,23 +628,34 @@ async function fillIntoActiveTab(match) {
 }
 
 // SSO and embedded-checkout flows put the login form in a same-tab
-// iframe. We walk the frames in tree order (top frame first, then
-// children) and stop at the first one that reports a successful fill —
-// parallel `Promise.all` here would dispatch to every frame and fill
-// every form that has a password input, including unrelated change-
-// password iframes and (worse) any malicious iframe injected into the
-// page. Sequential top-first contains the credential exposure to one
-// frame per click.
+// iframe. The fill walk goes:
 //
-// Residual risk: if the top frame has no password input but two
-// iframes do, the first iframe in tree order gets filled regardless of
-// whether the user actually meant that one. A focus-aware probe
-// (`document.hasFocus()` per frame, prefer focused frame) would close
-// that gap; deferred until we have evidence anyone hits it in
-// practice.
+// 1. Probe every frame in parallel — read-only `document.hasFocus()`
+//    via the `probe-focus` message; no credential is sent, no DOM is
+//    mutated. The first frame that reports focus is the user's
+//    intended target.
+// 2. Build the fill order: focused frame first (when one was found),
+//    followed by every frame in tree order with the focused frame
+//    removed so it isn't tried twice.
+// 3. Walk the order sequentially and stop at the first `ok:true`
+//    reply. Sequential rather than parallel because a parallel
+//    `Promise.all` here would dispatch the actual fill payload to
+//    every frame and fill every form that has a password input,
+//    including unrelated change-password iframes and (worse) any
+//    malicious iframe injected into the page.
+//
+// The focus probe closes the iframe-targeting gap from earlier review
+// rounds at the cost of one extra round-trip per fill, which is
+// negligible against the human reaction time it takes to click the
+// row.
 async function fillAcrossFrames(tabId, payload) {
   const frames = await listFrames(tabId);
-  for (const frameId of frames) {
+  const focused = await findFocusedFrame(tabId, frames);
+  const order =
+    focused === null
+      ? frames
+      : [focused, ...frames.filter((f) => f !== focused)];
+  for (const frameId of order) {
     try {
       const reply = await api.tabs.sendMessage(tabId, payload, { frameId });
       if (reply?.ok) {
@@ -657,6 +668,28 @@ async function fillAcrossFrames(tabId, payload) {
     }
   }
   return { ok: false };
+}
+
+// Parallel `probe-focus` to every frame. Returns the frameId of the
+// first frame that reports focus, or null if none do (or all probes
+// fail). Probes are read-only so dispatching them in parallel is
+// safe; the actual fill stays sequential downstream.
+async function findFocusedFrame(tabId, frames) {
+  const probes = await Promise.all(
+    frames.map(async (frameId) => {
+      try {
+        const reply = await api.tabs.sendMessage(
+          tabId,
+          { type: "probe-focus" },
+          { frameId },
+        );
+        return reply?.ok && reply.focused === true ? frameId : null;
+      } catch (_) {
+        return null;
+      }
+    }),
+  );
+  return probes.find((f) => f !== null) ?? null;
 }
 
 async function listFrames(tabId) {

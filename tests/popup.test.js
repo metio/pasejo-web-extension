@@ -42,6 +42,7 @@ const EXPOSED = [
   "button",
   "fillIntoActiveTab",
   "fillAcrossFrames",
+  "findFocusedFrame",
   "listFrames",
   "main",
   "refreshStoresAndQuery",
@@ -66,6 +67,41 @@ function deferred() {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+// fillAcrossFrames sends a `probe-focus` round to every frame before
+// the actual fill round; this helper stubs `api.tabs.sendMessage` so
+// the two rounds are answered separately. `focusedFrameId = null`
+// means "no frame is focused" (the default top-first ordering still
+// applies). `byFrame` is a map from frameId to either the resolved
+// fill reply or an Error to reject with — frames not listed default
+// to `{ ok: false }`.
+function stubProbeAndFill(api, { focusedFrameId = null, byFrame = {} } = {}) {
+  api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
+    if (msg.type === "probe-focus") {
+      return Promise.resolve({
+        ok: true,
+        focused:
+          focusedFrameId !== null && opts.frameId === focusedFrameId,
+      });
+    }
+    const handler = byFrame[opts.frameId];
+    if (handler === undefined) {
+      return Promise.resolve({ ok: false });
+    }
+    if (handler instanceof Error) {
+      return Promise.reject(handler);
+    }
+    return Promise.resolve(handler);
+  });
+}
+
+// Count only the actual fill calls so assertions stay readable when
+// probe-focus also flows through the same spy.
+function fillCallCount(api) {
+  return api.tabs.sendMessage.mock.calls.filter(
+    ([, msg]) => msg.type === "fill",
+  ).length;
 }
 
 // popup.js calls `main()` immediately on load — there is no
@@ -1677,17 +1713,17 @@ describe("popup.js", () => {
         { frameId: 1 },
         { frameId: 2 },
       ]);
-      api.tabs.sendMessage = vi
-        .fn()
-        .mockResolvedValueOnce({ ok: false })
-        .mockResolvedValueOnce({
-          ok: true,
-          filled: { username: true, password: true },
-        })
-        .mockResolvedValueOnce({ ok: true });
+      stubProbeAndFill(api, {
+        byFrame: {
+          0: { ok: false },
+          1: { ok: true, filled: { username: true, password: true } },
+          2: { ok: true },
+        },
+      });
       const reply = await popup.fillAcrossFrames(7, { type: "fill" });
       expect(reply.ok).toBe(true);
-      expect(api.tabs.sendMessage).toHaveBeenCalledTimes(2);
+      // Stops at the first ok=true (frame 1); frame 2 is not tried.
+      expect(fillCallCount(api)).toBe(2);
     });
 
     it("skips frames that throw (no content script) and tries the next", async () => {
@@ -1696,10 +1732,12 @@ describe("popup.js", () => {
         { frameId: 0 },
         { frameId: 1 },
       ]);
-      api.tabs.sendMessage = vi
-        .fn()
-        .mockRejectedValueOnce(new Error("no receiver"))
-        .mockResolvedValueOnce({ ok: true });
+      stubProbeAndFill(api, {
+        byFrame: {
+          0: new Error("no receiver"),
+          1: { ok: true },
+        },
+      });
       const reply = await popup.fillAcrossFrames(7, { type: "fill" });
       expect(reply.ok).toBe(true);
     });
@@ -1707,9 +1745,173 @@ describe("popup.js", () => {
     it("returns { ok: false } when no frame reports success", async () => {
       const { api, popup } = await setUp();
       api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
-      api.tabs.sendMessage = vi.fn().mockResolvedValue({ ok: false });
+      stubProbeAndFill(api, { byFrame: { 0: { ok: false } } });
       const reply = await popup.fillAcrossFrames(7, { type: "fill" });
       expect(reply).toEqual({ ok: false });
+    });
+  });
+
+  describe("focus-aware ordering (item T)", () => {
+    it("tries the focused frame BEFORE the top frame when both have fillable inputs", async () => {
+      const { api, popup } = await setUp();
+      api.webNavigation.getAllFrames.mockResolvedValueOnce([
+        { frameId: 0 },
+        { frameId: 1 },
+      ]);
+      stubProbeAndFill(api, {
+        focusedFrameId: 1,
+        byFrame: {
+          0: { ok: true, filled: { username: true, password: true } },
+          1: { ok: true, filled: { username: true, password: true } },
+        },
+      });
+      const reply = await popup.fillAcrossFrames(7, { type: "fill" });
+      expect(reply.ok).toBe(true);
+      // The focused frame (1) is consulted first and succeeds — frame
+      // 0 is never asked to fill.
+      const fillFrames = api.tabs.sendMessage.mock.calls
+        .filter(([, msg]) => msg.type === "fill")
+        .map(([, , opts]) => opts.frameId);
+      expect(fillFrames).toEqual([1]);
+    });
+
+    it("falls back to top-first walking when no frame reports focus", async () => {
+      const { api, popup } = await setUp();
+      api.webNavigation.getAllFrames.mockResolvedValueOnce([
+        { frameId: 0 },
+        { frameId: 1 },
+        { frameId: 2 },
+      ]);
+      stubProbeAndFill(api, {
+        focusedFrameId: null, // no frame is focused
+        byFrame: {
+          0: { ok: false },
+          1: { ok: true, filled: { username: true, password: true } },
+          2: { ok: true },
+        },
+      });
+      const reply = await popup.fillAcrossFrames(7, { type: "fill" });
+      expect(reply.ok).toBe(true);
+      const fillFrames = api.tabs.sendMessage.mock.calls
+        .filter(([, msg]) => msg.type === "fill")
+        .map(([, , opts]) => opts.frameId);
+      // Top-first: 0, then 1 (which succeeds and stops the walk).
+      expect(fillFrames).toEqual([0, 1]);
+    });
+
+    it("falls through to top-first when the focused frame has no fillable input", async () => {
+      const { api, popup } = await setUp();
+      api.webNavigation.getAllFrames.mockResolvedValueOnce([
+        { frameId: 0 },
+        { frameId: 1 },
+        { frameId: 2 },
+      ]);
+      stubProbeAndFill(api, {
+        focusedFrameId: 2,
+        byFrame: {
+          0: { ok: true, filled: { username: true, password: true } },
+          1: { ok: true, filled: { username: true, password: true } },
+          2: { ok: false },
+        },
+      });
+      const reply = await popup.fillAcrossFrames(7, { type: "fill" });
+      expect(reply.ok).toBe(true);
+      const fillFrames = api.tabs.sendMessage.mock.calls
+        .filter(([, msg]) => msg.type === "fill")
+        .map(([, , opts]) => opts.frameId);
+      // Focused frame 2 is tried first and returns ok:false; we move
+      // on to top-first order [0, 1], landing on 0.
+      expect(fillFrames).toEqual([2, 0]);
+    });
+
+    it("does not try the focused frame twice when the fall-through hits the rest of the list", async () => {
+      const { api, popup } = await setUp();
+      api.webNavigation.getAllFrames.mockResolvedValueOnce([
+        { frameId: 0 },
+        { frameId: 1 },
+      ]);
+      stubProbeAndFill(api, {
+        focusedFrameId: 0,
+        byFrame: {
+          0: { ok: false },
+          1: { ok: true, filled: { username: true, password: true } },
+        },
+      });
+      await popup.fillAcrossFrames(7, { type: "fill" });
+      const fillFrames = api.tabs.sendMessage.mock.calls
+        .filter(([, msg]) => msg.type === "fill")
+        .map(([, , opts]) => opts.frameId);
+      // Focused frame 0 first; on failure walk the rest, skipping 0
+      // again — never duplicate the focused id.
+      expect(fillFrames).toEqual([0, 1]);
+    });
+  });
+
+  describe("findFocusedFrame", () => {
+    it("returns the frameId of the only frame that reports focus", async () => {
+      const { api, popup } = await setUp();
+      stubProbeAndFill(api, { focusedFrameId: 3 });
+      const reply = await popup.findFocusedFrame(7, [0, 1, 3]);
+      expect(reply).toBe(3);
+    });
+
+    it("returns null when no frame reports focus", async () => {
+      const { api, popup } = await setUp();
+      stubProbeAndFill(api, { focusedFrameId: null });
+      const reply = await popup.findFocusedFrame(7, [0, 1, 2]);
+      expect(reply).toBeNull();
+    });
+
+    it("returns null when no frames were given", async () => {
+      const { api, popup } = await setUp();
+      stubProbeAndFill(api, { focusedFrameId: null });
+      const reply = await popup.findFocusedFrame(7, []);
+      expect(reply).toBeNull();
+    });
+
+    it("treats a probe that throws as 'not focused' (frame has no content script)", async () => {
+      const { api, popup } = await setUp();
+      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
+        if (msg.type !== "probe-focus") {
+          return Promise.resolve({ ok: false });
+        }
+        if (opts.frameId === 0) {
+          return Promise.reject(new Error("no receiver"));
+        }
+        if (opts.frameId === 1) {
+          return Promise.resolve({ ok: true, focused: true });
+        }
+        return Promise.resolve({ ok: true, focused: false });
+      });
+      const reply = await popup.findFocusedFrame(7, [0, 1, 2]);
+      expect(reply).toBe(1);
+    });
+
+    it("ignores frames whose probe replies ok=false", async () => {
+      const { api, popup } = await setUp();
+      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
+        if (msg.type !== "probe-focus") {
+          return Promise.resolve({ ok: false });
+        }
+        if (opts.frameId === 0) {
+          return Promise.resolve({ ok: false });
+        }
+        return Promise.resolve({ ok: true, focused: false });
+      });
+      const reply = await popup.findFocusedFrame(7, [0, 1]);
+      expect(reply).toBeNull();
+    });
+
+    it("picks the first focused frame when several happen to report focused (defensive)", async () => {
+      const { api, popup } = await setUp();
+      api.tabs.sendMessage = vi.fn((_tabId, msg) => {
+        if (msg.type !== "probe-focus") {
+          return Promise.resolve({ ok: false });
+        }
+        return Promise.resolve({ ok: true, focused: true });
+      });
+      const reply = await popup.findFocusedFrame(7, [3, 5, 9]);
+      expect(reply).toBe(3);
     });
   });
 
@@ -1735,9 +1937,10 @@ describe("popup.js", () => {
         { id: 1, url: "https://x.test" },
       ]);
       api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
-      api.tabs.sendMessage = vi.fn().mockResolvedValueOnce({
-        ok: true,
-        filled: { username: true, password: false },
+      stubProbeAndFill(api, {
+        byFrame: {
+          0: { ok: true, filled: { username: true, password: false } },
+        },
       });
       await popup.fillIntoActiveTab({ name: "alice", username: "alice" });
       expect(popup.elements.status.textContent).toMatch(
@@ -1752,9 +1955,10 @@ describe("popup.js", () => {
         { id: 1, url: "https://x.test" },
       ]);
       api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
-      api.tabs.sendMessage = vi.fn().mockResolvedValueOnce({
-        ok: true,
-        filled: { username: true, password: true },
+      stubProbeAndFill(api, {
+        byFrame: {
+          0: { ok: true, filled: { username: true, password: true } },
+        },
       });
       await popup.fillIntoActiveTab({
         name: "alice",
@@ -1770,7 +1974,7 @@ describe("popup.js", () => {
         { id: 1, url: "https://x.test" },
       ]);
       api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
-      api.tabs.sendMessage = vi.fn().mockResolvedValueOnce({ ok: false });
+      stubProbeAndFill(api, { byFrame: { 0: { ok: false } } });
       await popup.fillIntoActiveTab({ name: "alice", username: "alice" });
       expect(popup.elements.status.textContent).toMatch(/No frame/);
       expect(popup.state.filling).toBe(false);

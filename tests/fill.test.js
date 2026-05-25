@@ -120,6 +120,7 @@ describe("fill.js content script", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     delete globalThis.browser;
     delete globalThis.chrome;
     document.body.innerHTML = "";
@@ -130,7 +131,7 @@ describe("fill.js content script", () => {
       expect(api.runtime.onMessage.addListener).toHaveBeenCalledTimes(1);
     });
 
-    it("ignores messages without `type: fill`", async () => {
+    it("ignores messages without a recognised type", async () => {
       const reply = await callListener(api, { type: "other" });
       expect(reply).toBeUndefined();
     });
@@ -138,6 +139,35 @@ describe("fill.js content script", () => {
     it("ignores null messages", async () => {
       const reply = await callListener(api, null);
       expect(reply).toBeUndefined();
+    });
+  });
+
+  describe("probe-focus (item T)", () => {
+    // happy-dom's `document.hasFocus()` default varies across versions;
+    // we stub it explicitly so each test exercises the contract
+    // deterministically rather than relying on the engine's defaults.
+
+    it("reports `focused: true` when document.hasFocus() is true", async () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      const reply = await callListener(api, { type: "probe-focus" });
+      expect(reply).toEqual({ ok: true, focused: true });
+    });
+
+    it("reports `focused: false` when document.hasFocus() is false", async () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(false);
+      const reply = await callListener(api, { type: "probe-focus" });
+      expect(reply).toEqual({ ok: true, focused: false });
+    });
+
+    it("does not mutate the DOM (probe is read-only)", async () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      const password = makeVisibleInput("password");
+      const observer = vi.fn();
+      password.addEventListener("input", observer);
+      password.addEventListener("change", observer);
+      await callListener(api, { type: "probe-focus" });
+      expect(observer).not.toHaveBeenCalled();
+      expect(password.value).toBe("");
     });
   });
 
