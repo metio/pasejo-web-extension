@@ -82,10 +82,23 @@ async function sendBackground(message) {
 }
 
 // Strip user-info, port, and path so the matcher works with what the
-// host expects (`example.com`, not `https://example.com/login`).
+// host expects (`example.com`, not `https://example.com/login`). IPv6
+// literals: `URL.hostname` returns the bracketed form `[::1]`, but the
+// host's URL extractor normalises stored URL fields to the unbracketed
+// `::1` for comparison. Sending the bracketed form would break both
+// URL-field matching (one bracketed, one not) and the name-fallback
+// path-segment compare. Strip the wrapping brackets here so both sides
+// agree on the unbracketed canonical form.
 function activeHostname(url) {
   try {
-    return new URL(url).hostname || null;
+    const hostname = new URL(url).hostname;
+    if (!hostname) {
+      return null;
+    }
+    if (hostname.startsWith("[") && hostname.endsWith("]")) {
+      return hostname.slice(1, -1);
+    }
+    return hostname;
   } catch (_) {
     return null;
   }
@@ -150,10 +163,14 @@ function renderStores(stores, preferred) {
     const all = document.createElement("option");
     all.value = ALL_STORES;
     all.textContent = "All stores";
+    elements.store.appendChild(all);
     if (preferred === ALL_STORES) {
+      // Selectedness is flipped AFTER append so the option is part of
+      // its select before the IDL setter fires; in detached options the
+      // selectedness can be silently re-coerced on insertion when the
+      // select has no other selected option to honour.
       all.selected = true;
     }
-    elements.store.appendChild(all);
   }
   for (const entry of stores) {
     const option = document.createElement("option");
@@ -163,6 +180,7 @@ function renderStores(stores, preferred) {
     // it on hover; Chrome may not) but where it works it lets the user
     // see the full name of a long store that the dropdown truncates.
     option.title = entry.name;
+    elements.store.appendChild(option);
     // The dropdown's initial selection prefers the per-host memory, then
     // falls back to the config's default-marked store. Picking here
     // (rather than overriding `.value` after `replaceChildren`) avoids
@@ -171,7 +189,6 @@ function renderStores(stores, preferred) {
     if (preferred ? entry.name === preferred : entry.default) {
       option.selected = true;
     }
-    elements.store.appendChild(option);
   }
   state.stores = stores;
   state.store = elements.store.value || null;
@@ -455,44 +472,37 @@ async function fillIntoActiveTab(match) {
     username: match.username,
     password: match.password,
   };
-  try {
-    const reply = await fillAcrossFrames(tab.id, payload);
-    if (reply?.ok) {
-      // Partial fill: the matching frame had a username field but no
-      // password field (typical multi-step login email page). Tell the
-      // user explicitly so they don't expect the password fill to have
-      // happened — they need to reopen the popup once the password
-      // page loads.
-      const partial =
-        reply.filled?.password === false && reply.filled?.username === true;
-      setStatus(
-        partial
-          ? `Filled username for ${match.name} (no password field on this page).`
-          : `Filled ${match.name}.`,
-      );
-      // Give the user a moment to read the success line before the popup
-      // disappears. Without the delay the status flashes too briefly to
-      // notice when the close races the paint. Partial fills get a
-      // longer pause because the message is longer and the user needs
-      // to read the next-step instruction.
-      //
-      // Note: `state.filling` deliberately stays `true` here. The popup
-      // is about to close, and clearing the flag would re-open the
-      // double-click window for the brief interval before
-      // `window.close()` fires.
-      setTimeout(() => window.close(), partial ? 1500 : 600);
-      return;
-    }
+  const reply = await fillAcrossFrames(tab.id, payload);
+  if (reply.ok) {
+    // Partial fill: the matching frame had a username field but no
+    // password field (typical multi-step login email page). Tell the
+    // user explicitly so they don't expect the password fill to have
+    // happened — they need to reopen the popup once the password
+    // page loads.
+    const partial =
+      reply.filled?.password === false && reply.filled?.username === true;
     setStatus(
-      reply?.error ?? "No frame on the page had a fillable password input.",
-      "error",
+      partial
+        ? `Filled username for ${match.name} (no password field on this page).`
+        : `Filled ${match.name}.`,
     );
-  } catch (err) {
-    setStatus(
-      `Could not reach the page: ${err.message}. Reload the tab if it was opened before the extension.`,
-      "error",
-    );
+    // Give the user a moment to read the success line before the popup
+    // disappears. Without the delay the status flashes too briefly to
+    // notice when the close races the paint. Partial fills get a
+    // longer pause because the message is longer and the user needs
+    // to read the next-step instruction.
+    //
+    // Note: `state.filling` deliberately stays `true` here. The popup
+    // is about to close, and clearing the flag would re-open the
+    // double-click window for the brief interval before
+    // `window.close()` fires.
+    setTimeout(() => window.close(), partial ? 1500 : 600);
+    return;
   }
+  setStatus(
+    "No frame on the page had a fillable password input.",
+    "error",
+  );
   // Failure path: re-enable so the user can try a different match.
   state.filling = false;
 }

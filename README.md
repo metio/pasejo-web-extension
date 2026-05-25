@@ -114,7 +114,6 @@ for the per-permission breakdown.
 Lint the Firefox bundle before submission:
 
 ```sh
-npm install -g web-ext   # one-time
 web-ext lint --source-dir=dist/firefox
 ```
 
@@ -122,6 +121,28 @@ CI runs the same `package.sh` + `web-ext lint` on every PR and
 publishes the artifacts under the workflow run. Push a `vX.Y.Z` tag to
 trigger the release workflow, which attaches the same archives to a
 GitHub Release.
+
+## Tests
+
+The unit suite lives under `tests/`. It uses
+[Vitest](https://vitest.dev) on top of
+[`happy-dom`](https://github.com/capricorn86/happy-dom) for the
+DOM-touching files (popup, content script) and a stubbed WebExtensions
+API for the background script. All four source files
+(`protocol.js`, `background.js`, `popup/popup.js`, `content/fill.js`)
+are loaded as classic scripts via `vm.compileFunction` so the same
+files the extension ships are the files under test.
+
+```sh
+npm install          # one-time
+npm test             # run the suite once
+npm run test:watch   # re-run on file changes
+npm run coverage     # full run + v8 coverage report; the suite enforces 100% lines/branches/functions/statements
+```
+
+Coverage output lands in `coverage/` (gitignored). The default
+`lcov` + HTML reporters write an `index.html` you can open to navigate
+to any uncovered branch.
 
 ## Loading the unpacked extension
 

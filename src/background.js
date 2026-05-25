@@ -161,17 +161,13 @@ api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         store: message.store ?? null,
       })
         .then((response) => sendResponse({ ok: true, response }))
-        .catch((err) =>
-          sendResponse({ ok: false, error: err?.message ?? String(err) }),
-        );
+        .catch((err) => sendResponse({ ok: false, error: err.message }));
       return true;
     }
     case "list_stores": {
       sendNativeRequest({ action: ACTION.ListStores })
         .then((response) => sendResponse({ ok: true, response }))
-        .catch((err) =>
-          sendResponse({ ok: false, error: err?.message ?? String(err) }),
-        );
+        .catch((err) => sendResponse({ ok: false, error: err.message }));
       return true;
     }
     default:

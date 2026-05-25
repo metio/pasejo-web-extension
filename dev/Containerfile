@@ -3,4 +3,10 @@
 
 FROM docker.io/library/node:latest
 
+# `zip` is invoked by `./package.sh` to assemble the AMO `.xpi` and the
+# Chrome Web Store `.zip` archives from the per-browser unpacked dirs.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends zip \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN npm install --global web-ext

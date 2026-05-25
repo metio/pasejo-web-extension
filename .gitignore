@@ -6,4 +6,6 @@ web-ext-artifacts/
 *.xpi
 *.zip
 node_modules/
+coverage/
+package-lock.json
 .web-ext

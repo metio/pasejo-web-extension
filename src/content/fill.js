@@ -127,8 +127,8 @@
   // candidate inputs on the same page.
   function visibilityScore(el) {
     const rect = el.getBoundingClientRect();
-    const viewportH = window.innerHeight || document.documentElement.clientHeight;
-    const viewportW = window.innerWidth || document.documentElement.clientWidth;
+    const viewportH = window.innerHeight;
+    const viewportW = window.innerWidth;
     const visibleH = Math.max(
       0,
       Math.min(rect.bottom, viewportH) - Math.max(rect.top, 0),
@@ -153,7 +153,8 @@
   const USERNAME_TYPES = new Set(["text", "email", "tel", "url", ""]);
 
   function looksLikeUsername(el) {
-    if (!USERNAME_TYPES.has((el.type ?? "").toLowerCase())) {
+    const type = el.type.toLowerCase();
+    if (!USERNAME_TYPES.has(type)) {
       return false;
     }
     const haystack = [
@@ -167,8 +168,12 @@
       .join(" ")
       .toLowerCase();
     if (!haystack) {
-      // No hints either way — accept a plain text/email input.
-      return (el.type ?? "").toLowerCase() !== "";
+      // No hints either way — accept a plain text/email input, but
+      // refuse the type-less catch-all (`USERNAME_TYPES` carries `""`
+      // so exotic inputs whose `.type` is genuinely empty reach this
+      // point; without a hint we have no reason to think they're for
+      // usernames).
+      return type !== "";
     }
     return USERNAME_HINTS.some((hint) => haystack.includes(hint));
   }

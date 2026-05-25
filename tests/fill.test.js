@@ -1,0 +1,645 @@
+// SPDX-FileCopyrightText: The pasejo Authors
+// SPDX-License-Identifier: 0BSD
+
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+
+import { loadClassicScript } from "./helpers/load-script.js";
+import { makeApiMock } from "./helpers/mock-api.js";
+
+// fill.js is wrapped in an IIFE — every helper inside is module-private
+// once the content script registers its message listener. Tests
+// therefore drive the public surface (the runtime.onMessage listener)
+// and assert on (a) the DOM mutations the fill applied and (b) the
+// `sendResponse` payload the listener emitted.
+
+function callListener(api, message) {
+  const [listener] = api.__onMessageListeners;
+  if (!listener) {
+    throw new Error("fill.js never registered a message listener");
+  }
+  return new Promise((resolve) => {
+    let replied = false;
+    const sendResponse = (value) => {
+      replied = true;
+      resolve(value);
+    };
+    const kept = listener(message, { id: "test" }, sendResponse);
+    if (!replied && !kept) {
+      // Early-return listener that decided not to handle the message
+      // (e.g. non-fill type) — no reply, channel not kept open.
+      resolve(undefined);
+    }
+  });
+}
+
+// Force a non-zero bounding rect and a "visible" computed style so
+// `isInteractable` accepts the element. happy-dom otherwise gives every
+// detached and freshly-attached element a 0×0 rect, which the picker
+// reads as "not interactable" and ignores. Optionally supplies the
+// rect's top/left so visibility-score tests can place inputs inside or
+// outside the viewport deliberately.
+function makeVisibleInput(
+  type,
+  { props = {}, rect = {}, attached = true } = {},
+) {
+  const input = document.createElement("input");
+  input.type = type;
+  for (const [k, v] of Object.entries(props)) {
+    if (k.startsWith("attr:")) {
+      input.setAttribute(k.slice(5), v);
+    } else {
+      input[k] = v;
+    }
+  }
+  if (attached) {
+    document.body.appendChild(input);
+  }
+  Object.defineProperty(input, "getBoundingClientRect", {
+    value: () => ({
+      width: 200,
+      height: 30,
+      top: 0,
+      left: 0,
+      right: 200,
+      bottom: 30,
+      ...rect,
+    }),
+    configurable: true,
+  });
+  return input;
+}
+
+describe("fill.js content script", () => {
+  let api;
+
+  beforeEach(() => {
+    delete globalThis.browser;
+    delete globalThis.chrome;
+    api = makeApiMock();
+    globalThis.chrome = api;
+    document.body.innerHTML = "";
+    loadClassicScript("src/content/fill.js");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete globalThis.browser;
+    delete globalThis.chrome;
+    document.body.innerHTML = "";
+  });
+
+  describe("listener wiring", () => {
+    it("registers exactly one runtime.onMessage listener on load", () => {
+      expect(api.runtime.onMessage.addListener).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores messages without `type: fill`", async () => {
+      const reply = await callListener(api, { type: "other" });
+      expect(reply).toBeUndefined();
+    });
+
+    it("ignores null messages", async () => {
+      const reply = await callListener(api, null);
+      expect(reply).toBeUndefined();
+    });
+  });
+
+  describe("listener wiring (defensive)", () => {
+    it("does not throw when loaded without a WebExtensions API on globalThis", () => {
+      // Wipe out both globals so the `globalThis.browser ?? globalThis.chrome`
+      // resolution yields undefined and fill.js hits its early `return`.
+      delete globalThis.browser;
+      delete globalThis.chrome;
+      expect(() => loadClassicScript("src/content/fill.js")).not.toThrow();
+    });
+  });
+
+  describe("simple fill", () => {
+    it("fills a username and password input under the same form", async () => {
+      document.body.innerHTML = "<form id='f'></form>";
+      const form = document.getElementById("f");
+      const username = makeVisibleInput("text", {
+        props: { id: "user" },
+        attached: false,
+      });
+      form.appendChild(username);
+      const password = makeVisibleInput("password", { attached: false });
+      form.appendChild(password);
+
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "hunter2",
+      });
+      expect(reply).toEqual({
+        ok: true,
+        filled: { username: true, password: true },
+      });
+      expect(username.value).toBe("alice");
+      expect(password.value).toBe("hunter2");
+    });
+
+    it("fills only the password when no username was supplied", async () => {
+      makeVisibleInput("text", { props: { id: "u" } });
+      const password = makeVisibleInput("password");
+
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(reply.filled).toEqual({ username: false, password: true });
+      expect(password.value).toBe("hunter2");
+    });
+
+    it("fills only the username when no password was supplied", async () => {
+      const username = makeVisibleInput("text", {
+        props: { id: "u", name: "username" },
+      });
+      makeVisibleInput("password");
+
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+      });
+      expect(reply.filled.username).toBe(true);
+      expect(username.value).toBe("alice");
+    });
+  });
+
+  describe("partial fill (multi-step login)", () => {
+    it("returns password:false when only a username input exists and a username was supplied", async () => {
+      const email = makeVisibleInput("email", {
+        props: { id: "email", name: "email" },
+      });
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice@example.com",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(true);
+      expect(reply.filled).toEqual({ username: true, password: false });
+      expect(email.value).toBe("alice@example.com");
+    });
+
+    it("throws when the page has neither a password nor a username input", async () => {
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(false);
+      expect(reply.error).toMatch(/No password input found/);
+    });
+
+    it("throws when there is no password input AND no username was supplied", async () => {
+      makeVisibleInput("text", { props: { id: "u", name: "username" } });
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      // No password input on page; username arg was empty so partial-fill
+      // can't help.
+      expect(reply.ok).toBe(false);
+      expect(reply.error).toMatch(/No password input found/);
+    });
+  });
+
+  describe("findPasswordInput ranking", () => {
+    it("prefers the currently focused password input", async () => {
+      const pwdA = makeVisibleInput("password", {
+        rect: { top: 1000, bottom: 1030 },
+      });
+      const pwdB = makeVisibleInput("password", {
+        rect: { top: 10, bottom: 40 },
+      });
+      pwdA.focus();
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "p",
+      });
+      expect(reply.filled.password).toBe(true);
+      expect(pwdA.value).toBe("p");
+      expect(pwdB.value).toBe("");
+    });
+
+    it("falls back to viewport-visibility ranking when nothing is focused", async () => {
+      const offscreen = makeVisibleInput("password", {
+        rect: { top: 2000, bottom: 2030, left: 0, right: 200 },
+      });
+      const visible = makeVisibleInput("password", {
+        rect: { top: 10, bottom: 40, left: 0, right: 200 },
+      });
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "p",
+      });
+      expect(reply.ok).toBe(true);
+      expect(visible.value).toBe("p");
+      expect(offscreen.value).toBe("");
+    });
+  });
+
+  describe("findUsernameInputFor", () => {
+    it("skips disabled, readonly, and hidden inputs when looking for a username", async () => {
+      document.body.innerHTML = "<form id='f'></form>";
+      const form = document.getElementById("f");
+
+      const disabled = makeVisibleInput("text", {
+        props: { id: "d", name: "username", disabled: true },
+        attached: false,
+      });
+      form.appendChild(disabled);
+      const readonly = makeVisibleInput("text", {
+        props: { id: "r", name: "username", readOnly: true },
+        attached: false,
+      });
+      form.appendChild(readonly);
+      const hidden = makeVisibleInput("hidden", {
+        props: { id: "h", name: "username" },
+        attached: false,
+      });
+      form.appendChild(hidden);
+      const good = makeVisibleInput("text", {
+        props: { id: "g", name: "username" },
+        attached: false,
+      });
+      form.appendChild(good);
+      const password = makeVisibleInput("password", { attached: false });
+      form.appendChild(password);
+
+      await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "p",
+      });
+      expect(good.value).toBe("alice");
+      expect(disabled.value).toBe("");
+      expect(readonly.value).toBe("");
+      expect(hidden.value).toBe("");
+    });
+
+    it("uses document.querySelectorAll when the password input has no enclosing form", async () => {
+      const username = makeVisibleInput("text", {
+        props: { id: "u", name: "username" },
+      });
+      const password = makeVisibleInput("password");
+
+      await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "p",
+      });
+      expect(username.value).toBe("alice");
+      expect(password.value).toBe("p");
+    });
+
+    it("picks the closest preceding username candidate when several precede the password", async () => {
+      document.body.innerHTML = "<form id='f'></form>";
+      const form = document.getElementById("f");
+      const early = makeVisibleInput("text", {
+        props: { id: "e", name: "username" },
+        attached: false,
+      });
+      form.appendChild(early);
+      const late = makeVisibleInput("text", {
+        props: { id: "l", name: "username" },
+        attached: false,
+      });
+      form.appendChild(late);
+      const password = makeVisibleInput("password", { attached: false });
+      form.appendChild(password);
+
+      await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "p",
+      });
+      expect(late.value).toBe("alice");
+      expect(early.value).toBe("");
+    });
+
+    it("falls back to the first candidate when no username field precedes the password", async () => {
+      document.body.innerHTML = "<form id='f'></form>";
+      const form = document.getElementById("f");
+      const password = makeVisibleInput("password", { attached: false });
+      form.appendChild(password);
+      const after = makeVisibleInput("text", {
+        props: { id: "u", name: "username" },
+        attached: false,
+      });
+      form.appendChild(after);
+
+      await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "p",
+      });
+      expect(after.value).toBe("alice");
+    });
+
+    it("returns null username when no candidate is found (only fills password)", async () => {
+      document.body.innerHTML = "<form id='f'></form>";
+      const form = document.getElementById("f");
+      const password = makeVisibleInput("password", { attached: false });
+      form.appendChild(password);
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "p",
+      });
+      expect(reply.filled).toEqual({ username: false, password: true });
+      expect(password.value).toBe("p");
+    });
+  });
+
+  describe("findStandaloneUsernameInput (partial-fill path)", () => {
+    it("prefers the currently focused username candidate", async () => {
+      const a = makeVisibleInput("email", {
+        props: { id: "a", name: "email" },
+        rect: { top: 1000, bottom: 1030 },
+      });
+      const b = makeVisibleInput("email", {
+        props: { id: "b", name: "email" },
+        rect: { top: 10, bottom: 40 },
+      });
+      a.focus();
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+      });
+      expect(reply.filled).toEqual({ username: true, password: false });
+      expect(a.value).toBe("alice");
+      expect(b.value).toBe("");
+    });
+
+    it("falls back to viewport-visibility when nothing is focused", async () => {
+      const offscreen = makeVisibleInput("email", {
+        props: { id: "o", name: "email" },
+        rect: { top: 2000, bottom: 2030 },
+      });
+      const visible = makeVisibleInput("email", {
+        props: { id: "v", name: "email" },
+        rect: { top: 10, bottom: 40 },
+      });
+      await callListener(api, {
+        type: "fill",
+        username: "alice",
+      });
+      expect(visible.value).toBe("alice");
+      expect(offscreen.value).toBe("");
+    });
+  });
+
+  describe("looksLikeUsername", () => {
+    it("accepts inputs with any of the canonical hints in id/name/placeholder/autocomplete/aria-label", async () => {
+      const cases = [
+        { id: "user-id" },
+        { name: "username" },
+        { placeholder: "Login" },
+        { "attr:autocomplete": "email" },
+        { "attr:aria-label": "your account" },
+      ];
+      for (const props of cases) {
+        document.body.innerHTML = "";
+        const username = makeVisibleInput("text", { props });
+        const password = makeVisibleInput("password");
+        await callListener(api, {
+          type: "fill",
+          username: "x",
+          password: "y",
+        });
+        expect(username.value).toBe("x");
+      }
+    });
+
+    it("rejects username-shaped types like number/checkbox/etc", async () => {
+      document.body.innerHTML = "<form id='f'></form>";
+      const form = document.getElementById("f");
+      const phone = makeVisibleInput("number", {
+        props: { id: "u", name: "username" },
+        attached: false,
+      });
+      form.appendChild(phone);
+      const password = makeVisibleInput("password", { attached: false });
+      form.appendChild(password);
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "p",
+      });
+      expect(reply.filled.username).toBe(false);
+      expect(phone.value).toBe("");
+    });
+
+    it("accepts a plain `text` input even when the haystack is empty", async () => {
+      const plain = makeVisibleInput("text");
+      const password = makeVisibleInput("password");
+      await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "p",
+      });
+      expect(plain.value).toBe("alice");
+    });
+
+    it("rejects an input whose .type getter returns '' even with empty haystack", async () => {
+      const noType = makeVisibleInput("text");
+      // happy-dom normalises `input.type = ""` back to "text" the way
+      // every browser does, so we must stub the property to force the
+      // empty-string branch. The runtime branch exists to filter out
+      // legacy/exotic input shapes whose .type is genuinely empty.
+      Object.defineProperty(noType, "type", {
+        get: () => "",
+        configurable: true,
+      });
+      const password = makeVisibleInput("password");
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "p",
+      });
+      expect(reply.filled.username).toBe(false);
+      expect(noType.value).toBe("");
+    });
+
+    it("rejects an input whose haystack carries no canonical hint", async () => {
+      const decoy = makeVisibleInput("text", {
+        props: { id: "address-1", name: "street" },
+      });
+      const password = makeVisibleInput("password");
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "p",
+      });
+      expect(reply.filled.username).toBe(false);
+      expect(decoy.value).toBe("");
+    });
+  });
+
+  describe("isInteractable", () => {
+    it("skips inputs whose computed style is hidden", async () => {
+      const hiddenStyled = makeVisibleInput("password");
+      hiddenStyled.style.visibility = "hidden";
+      const visible = makeVisibleInput("password");
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "p",
+      });
+      expect(reply.filled.password).toBe(true);
+      expect(visible.value).toBe("p");
+      expect(hiddenStyled.value).toBe("");
+    });
+
+    it("skips inputs whose computed style is display:none", async () => {
+      const noneStyled = makeVisibleInput("password");
+      noneStyled.style.display = "none";
+      const visible = makeVisibleInput("password");
+      await callListener(api, {
+        type: "fill",
+        password: "p",
+      });
+      expect(visible.value).toBe("p");
+      expect(noneStyled.value).toBe("");
+    });
+
+    it("skips zero-sized inputs (rect width or height = 0)", async () => {
+      const zeroSize = makeVisibleInput("password", {
+        rect: { width: 0, height: 0 },
+      });
+      const real = makeVisibleInput("password");
+      await callListener(api, {
+        type: "fill",
+        password: "p",
+      });
+      expect(real.value).toBe("p");
+      expect(zeroSize.value).toBe("");
+    });
+  });
+
+  describe("assignInput / value setters and events", () => {
+    it("dispatches input + change events so framework-controlled forms see the write", async () => {
+      const password = makeVisibleInput("password");
+      const events = [];
+      password.addEventListener("input", () => events.push("input"));
+      password.addEventListener("change", () => events.push("change"));
+      await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(events).toEqual(["input", "change"]);
+    });
+
+    it("uses the prototype value setter (so React's internal state stays in sync)", async () => {
+      // Spy on HTMLInputElement.prototype.value setter via accessor.
+      const proto = HTMLInputElement.prototype;
+      const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+      const spy = vi.fn(descriptor.set);
+      Object.defineProperty(proto, "value", {
+        ...descriptor,
+        set: spy,
+      });
+      const password = makeVisibleInput("password");
+      await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(spy).toHaveBeenCalledWith("hunter2");
+      // Restore.
+      Object.defineProperty(proto, "value", descriptor);
+    });
+
+    it("falls back to direct assignment when the prototype carries no value descriptor", async () => {
+      // Stub the descriptor probe so assignInput's `setter` branch
+      // misses and the fallback `el.value = value` runs against the
+      // real prototype setter underneath.
+      const origGetOwnDescriptor = Object.getOwnPropertyDescriptor;
+      Object.getOwnPropertyDescriptor = (obj, key) => {
+        if (key === "value" && obj === HTMLInputElement.prototype) {
+          return undefined;
+        }
+        return origGetOwnDescriptor(obj, key);
+      };
+      try {
+        const password = makeVisibleInput("password");
+        await callListener(api, {
+          type: "fill",
+          password: "hunter2",
+        });
+        expect(password.value).toBe("hunter2");
+      } finally {
+        Object.getOwnPropertyDescriptor = origGetOwnDescriptor;
+      }
+    });
+  });
+
+  describe("pulse", () => {
+    it("applies a visible outline that restores after the 600 ms window", async () => {
+      vi.useFakeTimers();
+      const password = makeVisibleInput("password");
+      password.style.outline = "1px dotted red";
+      password.style.outlineOffset = "4px";
+      await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      // happy-dom normalises the shorthand serialisation (longhand
+      // order can change), so we assert on substrings rather than the
+      // exact form. Both the brand colour and the 2px width must be
+      // present immediately after fill; both the old colour and the old
+      // offset must come back after the 600 ms restore.
+      expect(password.style.outline).toContain("#3a4ba0");
+      expect(password.style.outline).toContain("2px");
+      expect(password.style.outlineOffset).toBe("0");
+      vi.advanceTimersByTime(600);
+      expect(password.style.outline).toContain("red");
+      expect(password.style.outline).toContain("1px");
+      expect(password.style.outlineOffset).toBe("4px");
+    });
+  });
+
+  describe("fallback paths inside the listener", () => {
+    it("the listener catches errors thrown by fill and replies with ok:false", async () => {
+      // No password input AND no username arg → fill() throws.
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(false);
+      expect(reply.error).toMatch(/No password input found/);
+    });
+
+    it("the listener catches a non-Error throw inside fill and stringifies it", async () => {
+      // Override Object.getPrototypeOf to throw a non-Error value the
+      // first time it's called inside assignInput, so the `?? String(err)`
+      // fallback runs.
+      const original = Object.getPrototypeOf;
+      let count = 0;
+      Object.getPrototypeOf = (obj) => {
+        count += 1;
+        if (count === 1) {
+          throw "kaboom"; // string, not Error
+        }
+        return original(obj);
+      };
+      makeVisibleInput("password");
+      try {
+        const reply = await callListener(api, {
+          type: "fill",
+          password: "p",
+        });
+        expect(reply.ok).toBe(false);
+        expect(reply.error).toBe("kaboom");
+      } finally {
+        Object.getPrototypeOf = original;
+      }
+    });
+  });
+});
