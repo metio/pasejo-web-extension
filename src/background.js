@@ -36,6 +36,14 @@ const NATIVE_TIMEOUT_MS = 30_000;
 const MAX_STRING_LEN = 64 * 1024;
 const MAX_ARRAY_LEN = 10_000;
 const MAX_OBJECT_KEYS = 1024;
+// Maximum nesting depth (inclusive) at which a value is still
+// accepted. The outermost reply is depth 0; each nested object /
+// array adds one. The reject fires when an attempt to enter depth
+// `MAX_DEPTH + 1` is made. Matches the inclusive `> N` rejection
+// shape used by the size constants above so all four limits read
+// the same way: "anything larger than this is invalid". 6 covers
+// `ResponseEnvelope` → payload → field (e.g. `stores`) → entry
+// object → field value with headroom.
 const MAX_DEPTH = 6;
 
 // Walks the host's reply enforcing the size/depth limits above —
@@ -48,7 +56,9 @@ const MAX_DEPTH = 6;
 // enough for our flat protocol.
 function validateResponseShape(value, depth) {
   if (depth > MAX_DEPTH) {
-    throw new Error(`host response nests deeper than ${MAX_DEPTH} levels`);
+    throw new Error(
+      `host response exceeds maximum nesting depth of ${MAX_DEPTH}`,
+    );
   }
   if (typeof value === "string") {
     if (value.length > MAX_STRING_LEN) {

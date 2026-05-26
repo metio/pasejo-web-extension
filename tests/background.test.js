@@ -108,12 +108,31 @@ describe("background.js", () => {
       expect(reply.error).toMatch(/more than 1024 keys/);
     });
 
-    it("rejects payloads nesting deeper than 6 levels", async () => {
-      // depth 0..6 is 7 levels; one nested object at depth 7 trips.
+    it("rejects payloads that exceed the maximum nesting depth (item S)", async () => {
+      // MAX_DEPTH is the deepest accepted depth value (depths 0..6
+      // pass; an attempt to recurse into depth 7 trips). The seven
+      // nested objects below put the leaf scalar at depth 7.
       const deep = { a: { b: { c: { d: { e: { f: { g: 1 } } } } } } };
       const reply = await exchange(deep);
       expect(reply.ok).toBe(false);
-      expect(reply.error).toMatch(/deeper than 6/);
+      // The new wording reads "exceeds maximum nesting depth of 6"
+      // so the threshold and the rejection are unambiguous in the
+      // same message. Pinned to lock the wording in place — a
+      // future revert to "deeper than 6 levels" would re-introduce
+      // the off-by-one ambiguity the original review flagged.
+      expect(reply.error).toMatch(/exceeds maximum nesting depth of 6/);
+    });
+
+    it("accepts a payload that hits exactly MAX_DEPTH (boundary check, item S)", async () => {
+      // The leaf scalar here lives at depth 6 (one less than the
+      // failing fixture above), which is exactly the deepest
+      // accepted value. The reply must pass — the original
+      // ambiguous "deeper than 6 levels" wording could be misread
+      // as "depth 6 itself is rejected"; this test pins the
+      // inclusive boundary.
+      const exact = { a: { b: { c: { d: { e: { f: 1 } } } } } };
+      const reply = await exchange(exact);
+      expect(reply.ok).toBe(true);
     });
 
     it("ignores numbers, booleans, and null when walking the tree", async () => {
