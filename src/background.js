@@ -158,10 +158,10 @@ function sendNativeRequest(request) {
 // order, and resolves once each request has either landed a reply or
 // a per-request timeout has expired. The point is failure isolation:
 // a YubiKey-blocked decrypt on store A holds back only its own
-// response, while store B / C / D return immediately. Under the v1
-// per-port model the same scenario blocked the popup for the full
-// 30 s timeout AND lost every other store's results (the timeout
-// killed the shared port).
+// response, while store B / C / D return immediately. One stuck
+// store cannot drag the whole batch down to its timeout because the
+// host serves every request on its own worker thread and we
+// correlate replies by `request_id`, not by FIFO order.
 //
 // The returned `responses` array is aligned 1:1 with the `requests`
 // argument: index i is either the host's reply for `requests[i]` or
@@ -249,9 +249,11 @@ function sendNativeBatch(requests) {
           ? Number(message.request_id)
           : Number.NaN;
       if (!Number.isInteger(requestId) || !pending.has(requestId)) {
-        // Out-of-band reply (wrong id, repeat, or v1 host that doesn't
-        // echo request_id). Drop it — the per-request timer is the
-        // backstop.
+        // Out-of-band reply: a duplicate, a host that failed to echo
+        // `request_id` (a contract violation — every reply must carry
+        // the id from its corresponding request), or an id we never
+        // sent. Drop it; the per-request timer is the backstop that
+        // settles the still-pending slot.
         return;
       }
       const { request_id: _omit, ...payload } = message;
