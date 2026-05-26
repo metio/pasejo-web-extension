@@ -1373,6 +1373,12 @@ describe("popup.js", () => {
       expect(result).toBeNull();
       expect(popup.state.protocolOk).toBe(false);
       expect(popup.elements.status.textContent).toMatch(/protocol 99/);
+      // Item M: the noun is repeated on the extension's side so the
+      // trailing number reads as a clause ("extension speaks protocol
+      // 1") rather than a sentence fragment ("extension speaks 1").
+      expect(popup.elements.status.textContent).toMatch(
+        /extension speaks protocol 1/,
+      );
     });
 
     it("formats the unknown-version case with `(unknown)` placeholder", async () => {

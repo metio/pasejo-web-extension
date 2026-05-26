@@ -170,9 +170,14 @@ async function loadStores() {
     return renderHostError(reply);
   }
   if (!isCompatibleProtocol(reply.protocol_version)) {
+    // Repeat the noun on the extension's side so the trailing number
+    // reads as a clause ("extension speaks protocol N") rather than a
+    // sentence fragment ("extension speaks N"). Host side keeps its
+    // single mention of "protocol" because the noun has already been
+    // introduced.
     setStatus(
       `Host speaks protocol ${reply.protocol_version ?? "(unknown)"}, ` +
-        `extension speaks ${PROTOCOL_VERSION}. ` +
+        `extension speaks protocol ${PROTOCOL_VERSION}. ` +
         "Update the pasejo binary or the extension so both ends match.",
       "error",
     );
