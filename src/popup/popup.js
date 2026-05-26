@@ -287,6 +287,53 @@ async function pickPreferredStore(stores, hostname) {
 // `hostStoreWriteQueue` below.
 const HOST_STORE_KEY = "pasejo:host-stores";
 
+// Storage keys the popup wrote in earlier builds before the single-key
+// schema landed. The current code never reads them, so without a
+// reconcile pass they'd sit in `chrome.storage.local` forever as
+// orphan zombies on machines that ran an earlier build. The same
+// pass also cleans up any stale entries a user might have introduced
+// by hand from the browser's storage inspector. Run on every popup
+// open: the cost is one `get(null)` + at most one `remove(list)`
+// (~milliseconds against storage.local), and a per-open pass
+// catches drift introduced by dev-tools edits between popup opens.
+const LEGACY_HOST_KEY_PREFIX = "store-for-host:";
+const LEGACY_HOST_INDEX_KEY = "pasejo:host-store-index";
+
+// Best-effort cleanup of any storage keys the popup no longer owns.
+// Removes:
+// * every key matching the legacy `store-for-host:<hostname>` prefix
+//   (each hostname's choice used to live in its own entry under that
+//   schema; the current schema collapses everything into a single
+//   `pasejo:host-stores` map);
+// * the legacy `pasejo:host-store-index` array that tracked
+//   eviction order in the old two-key model.
+//
+// Failures are swallowed: reconciliation is opportunistic, the
+// popup must keep working even if storage is unavailable, and a
+// missed cleanup just means the next popup open will try again.
+async function reconcileLegacyStorage() {
+  if (!api.storage?.local) {
+    return;
+  }
+  try {
+    const all = await api.storage.local.get(null);
+    if (!all || typeof all !== "object") {
+      return;
+    }
+    const stale = Object.keys(all).filter(
+      (key) =>
+        key === LEGACY_HOST_INDEX_KEY ||
+        key.startsWith(LEGACY_HOST_KEY_PREFIX),
+    );
+    if (stale.length > 0) {
+      await api.storage.local.remove(stale);
+    }
+  } catch (_) {
+    // Storage unavailable / quota exceeded / a future API change —
+    // none of those should propagate up to the popup's main flow.
+  }
+}
+
 // Soft cap on the number of hosts whose store choice we remember.
 // chrome.storage.local's 5 MB quota would tolerate orders of magnitude
 // more entries, but letting the map grow unbounded lets a never-used
@@ -991,7 +1038,15 @@ async function main() {
   }
   state.domain = tab.hostname;
   elements.domain.textContent = tab.hostname ?? "(no domain)";
-  await refreshStoresAndQuery();
+  // Legacy-storage cleanup runs in parallel with the main refresh
+  // pipeline so the popup-open latency stays bounded by the slower
+  // of the two — `refreshStoresAndQuery` already involves a native-
+  // messaging round-trip, against which the cleanup's one
+  // `storage.local.get(null)` is in the noise.
+  // `reconcileLegacyStorage` swallows its own errors so the popup
+  // keeps working when storage is unavailable; chaining it through
+  // `Promise.all` therefore can't fail the outer await.
+  await Promise.all([reconcileLegacyStorage(), refreshStoresAndQuery()]);
 }
 
 elements.store.addEventListener("change", () => {

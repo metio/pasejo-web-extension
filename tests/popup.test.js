@@ -19,6 +19,9 @@ const EXPOSED = [
   "MAX_REMEMBERED_HOSTS",
   "MAX_STATUS_CHARS",
   "HOST_STORE_KEY",
+  "LEGACY_HOST_KEY_PREFIX",
+  "LEGACY_HOST_INDEX_KEY",
+  "reconcileLegacyStorage",
   "truncateStatus",
   "setStatus",
   "sendBackground",
@@ -1171,6 +1174,118 @@ describe("popup.js", () => {
       expect(written["host0.test"].store).toBe("personal");
       expect(written["host0.test"].lastUsedAt).toBe(10_000_000);
       expect(Object.keys(written)).toHaveLength(popup.MAX_REMEMBERED_HOSTS);
+    });
+  });
+
+  describe("reconcileLegacyStorage (item N)", () => {
+    // The pre-fix-B schema put each host's choice under its own
+    // `store-for-host:<hostname>` key plus a `pasejo:host-store-index`
+    // array. The single-key schema replaced both; without an active
+    // cleanup pass those legacy entries would sit in storage forever
+    // on machines that ran an earlier build. The same pass also
+    // cleans up dev-tools-introduced stale entries between popup
+    // opens.
+
+    it("removes every legacy `store-for-host:*` key", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        "store-for-host:example.com": "personal",
+        "store-for-host:github.com": "work",
+        [popup.HOST_STORE_KEY]: {
+          "current.test": { store: "x", lastUsedAt: 1 },
+        },
+      });
+      await popup.reconcileLegacyStorage();
+      expect(api.storage.local.remove).toHaveBeenCalledWith([
+        "store-for-host:example.com",
+        "store-for-host:github.com",
+      ]);
+    });
+
+    it("removes the legacy `pasejo:host-store-index` key", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.LEGACY_HOST_INDEX_KEY]: ["example.com", "github.com"],
+        [popup.HOST_STORE_KEY]: {
+          "current.test": { store: "x", lastUsedAt: 1 },
+        },
+      });
+      await popup.reconcileLegacyStorage();
+      expect(api.storage.local.remove).toHaveBeenCalledWith([
+        popup.LEGACY_HOST_INDEX_KEY,
+      ]);
+    });
+
+    it("removes legacy keys AND the index in a single batched call", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.LEGACY_HOST_INDEX_KEY]: ["example.com"],
+        "store-for-host:example.com": "personal",
+        "store-for-host:github.com": "work",
+        [popup.HOST_STORE_KEY]: {
+          "current.test": { store: "x", lastUsedAt: 1 },
+        },
+        // A user-introduced foreign key that ISN'T our concern —
+        // must be left alone so we don't clobber third-party state.
+        "wtf.someoneElse.config": { foo: "bar" },
+      });
+      await popup.reconcileLegacyStorage();
+      // Exactly one remove call carrying every legacy key we own.
+      expect(api.storage.local.remove).toHaveBeenCalledTimes(1);
+      const removed = api.storage.local.remove.mock.calls[0][0];
+      expect(removed).toEqual(
+        expect.arrayContaining([
+          popup.LEGACY_HOST_INDEX_KEY,
+          "store-for-host:example.com",
+          "store-for-host:github.com",
+        ]),
+      );
+      // The current schema key and unrelated foreign keys are
+      // untouched.
+      expect(removed).not.toContain(popup.HOST_STORE_KEY);
+      expect(removed).not.toContain("wtf.someoneElse.config");
+    });
+
+    it("does not call remove when there are no legacy entries", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.HOST_STORE_KEY]: {
+          "current.test": { store: "x", lastUsedAt: 1 },
+        },
+      });
+      await popup.reconcileLegacyStorage();
+      expect(api.storage.local.remove).not.toHaveBeenCalled();
+    });
+
+    it("treats a non-object storage payload as nothing-to-do (defensive)", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce(null);
+      await popup.reconcileLegacyStorage();
+      expect(api.storage.local.remove).not.toHaveBeenCalled();
+    });
+
+    it("no-ops without throwing when storage.local is unavailable", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local = undefined;
+      await expect(popup.reconcileLegacyStorage()).resolves.toBeUndefined();
+    });
+
+    it("swallows storage.get failures so popup open is never blocked", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockRejectedValueOnce(new Error("storage gone"));
+      await expect(popup.reconcileLegacyStorage()).resolves.toBeUndefined();
+      expect(api.storage.local.remove).not.toHaveBeenCalled();
+    });
+
+    it("swallows storage.remove failures so popup open is never blocked", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        "store-for-host:example.com": "x",
+      });
+      api.storage.local.remove.mockRejectedValueOnce(
+        new Error("quota exceeded"),
+      );
+      await expect(popup.reconcileLegacyStorage()).resolves.toBeUndefined();
     });
   });
 
@@ -3133,6 +3248,58 @@ describe("popup.js", () => {
       await flushAsync();
       await flushAsync();
       expect(api.runtime.sendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it("on popup open runs the legacy-storage cleanup in parallel with refreshStoresAndQuery (item N)", async () => {
+      delete globalThis.PASEJO;
+      delete globalThis.chrome;
+      const api = makeApiMock();
+      api.tabs.query = vi
+        .fn()
+        .mockResolvedValue([{ id: 1, url: "https://example.com" }]);
+      api.runtime.sendMessage = vi.fn().mockResolvedValue({
+        ok: true,
+        response: {
+          protocol_version: 1,
+          stores: [{ name: "personal", default: true }],
+          results: [],
+        },
+      });
+      // First storage.local.get returns the legacy-and-current
+      // mixed state a machine that ran a pre-fix-B build would
+      // have. Later gets (recall path) are answered with whatever
+      // the current schema holds — which the seeding pass above
+      // also includes — so the popup still resolves the per-host
+      // preference.
+      api.storage.local.get = vi.fn().mockResolvedValue({
+        "store-for-host:example.com": "personal",
+        "pasejo:host-store-index": ["example.com"],
+        "pasejo:host-stores": {
+          "example.com": { store: "personal", lastUsedAt: 1 },
+        },
+      });
+      api.storage.local.set = vi.fn();
+      api.storage.local.remove = vi.fn();
+      api.webNavigation.getAllFrames = vi
+        .fn()
+        .mockResolvedValue([{ frameId: 0 }]);
+      globalThis.chrome = api;
+      buildPopupDom(document);
+      loadClassicScript("src/protocol.js");
+      loadClassicScript("src/popup/popup.js", { expose: EXPOSED });
+      await flushAsync();
+      await flushAsync();
+      // The legacy keys were removed in one call carrying both.
+      expect(api.storage.local.remove).toHaveBeenCalledTimes(1);
+      const removed = api.storage.local.remove.mock.calls[0][0];
+      expect(removed).toEqual(
+        expect.arrayContaining([
+          "store-for-host:example.com",
+          "pasejo:host-store-index",
+        ]),
+      );
+      // The canonical key was NOT removed.
+      expect(removed).not.toContain("pasejo:host-stores");
     });
   });
 
