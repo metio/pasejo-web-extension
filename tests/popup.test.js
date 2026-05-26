@@ -2888,6 +2888,88 @@ describe("popup.js", () => {
       const reply = await popup.findFocusedFrame(7, [3, 5, 9]);
       expect(reply).toBe(3);
     });
+
+    it("short-circuits after one round-trip when the top frame reports focused (item R)", async () => {
+      const { api, popup } = await setUp();
+      const calls = [];
+      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
+        if (msg.type !== "probe-focus") {
+          return Promise.resolve({ ok: false });
+        }
+        calls.push(opts.frameId);
+        // Top frame says yes; everyone else would say no — but we
+        // expect no one else to be asked.
+        return Promise.resolve({
+          ok: true,
+          focused: opts.frameId === 0,
+        });
+      });
+      const reply = await popup.findFocusedFrame(7, [0, 1, 2, 3]);
+      expect(reply).toBe(0);
+      // Exactly one probe sent; the parallel broadcast was skipped.
+      expect(calls).toEqual([0]);
+    });
+
+    it("falls through to a parallel probe of the rest when the top frame is not focused (item R)", async () => {
+      const { api, popup } = await setUp();
+      const calls = [];
+      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
+        if (msg.type !== "probe-focus") {
+          return Promise.resolve({ ok: false });
+        }
+        calls.push(opts.frameId);
+        return Promise.resolve({
+          ok: true,
+          focused: opts.frameId === 2,
+        });
+      });
+      const reply = await popup.findFocusedFrame(7, [0, 1, 2, 3]);
+      expect(reply).toBe(2);
+      // Top frame is probed first, alone, then the rest are probed
+      // in parallel. The first three calls captured are [0] (top
+      // alone), then [1, 2, 3] in some order from the parallel
+      // dispatch.
+      expect(calls[0]).toBe(0);
+      expect(calls.slice(1).sort((a, b) => a - b)).toEqual([1, 2, 3]);
+    });
+
+    it("skips the top-frame pre-check when frameId 0 isn't in the surviving frames list", async () => {
+      const { api, popup } = await setUp();
+      const calls = [];
+      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
+        if (msg.type !== "probe-focus") {
+          return Promise.resolve({ ok: false });
+        }
+        calls.push(opts.frameId);
+        return Promise.resolve({
+          ok: true,
+          focused: opts.frameId === 5,
+        });
+      });
+      const reply = await popup.findFocusedFrame(7, [3, 5, 9]);
+      expect(reply).toBe(5);
+      // Frame 0 is not in the list (e.g. it was filtered out as
+      // about:blank). No pre-check round-trip; everyone goes in
+      // parallel.
+      expect(calls.sort((a, b) => a - b)).toEqual([3, 5, 9]);
+    });
+
+    it("returns null without any probe when frame 0 is the only entry and it is not focused", async () => {
+      const { api, popup } = await setUp();
+      const calls = [];
+      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
+        if (msg.type !== "probe-focus") {
+          return Promise.resolve({ ok: false });
+        }
+        calls.push(opts.frameId);
+        return Promise.resolve({ ok: true, focused: false });
+      });
+      const reply = await popup.findFocusedFrame(7, [0]);
+      expect(reply).toBeNull();
+      // The top-frame pre-check fired once; there's no remaining
+      // list to broadcast to, so no second wave of probes.
+      expect(calls).toEqual([0]);
+    });
   });
 
   describe("fillIntoActiveTab", () => {

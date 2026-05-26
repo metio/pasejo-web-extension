@@ -943,25 +943,43 @@ async function fillAcrossFrames(tabId, payload) {
   return { ok: false };
 }
 
-// Parallel `probe-focus` to every frame. Returns the frameId of the
-// first frame that reports focus, or null if none do (or all probes
-// fail). Probes are read-only so dispatching them in parallel is
-// safe; the actual fill stays sequential downstream.
+// Returns the frameId of the first frame that reports focus, or null
+// if none do (or all probes fail). Probes the top frame (frameId 0)
+// first — the common case for a typical login page is "the user is
+// already typing into the top frame", and answering yes after one
+// round-trip beats fanning out N parallel probes only to land on the
+// same answer. When the top frame doesn't report focus (or isn't in
+// the surviving-frames list at all — Refresh on an SSO iframe page)
+// we fall through to the parallel probe of the remaining frames so
+// finding the answer still costs roughly one round-trip rather than
+// N sequential ones.
 async function findFocusedFrame(tabId, frames) {
-  const probes = await Promise.all(
-    frames.map(async (frameId) => {
-      try {
-        const reply = await api.tabs.sendMessage(
-          tabId,
-          { type: "probe-focus" },
-          { frameId },
-        );
-        return reply?.ok && reply.focused === true ? frameId : null;
-      } catch (_) {
-        return null;
-      }
-    }),
-  );
+  if (frames.length === 0) {
+    return null;
+  }
+  const probeFrame = async (frameId) => {
+    try {
+      const reply = await api.tabs.sendMessage(
+        tabId,
+        { type: "probe-focus" },
+        { frameId },
+      );
+      return reply?.ok && reply.focused === true ? frameId : null;
+    } catch (_) {
+      return null;
+    }
+  };
+  if (frames.includes(0)) {
+    const top = await probeFrame(0);
+    if (top !== null) {
+      return top;
+    }
+  }
+  const remaining = frames.filter((f) => f !== 0);
+  if (remaining.length === 0) {
+    return null;
+  }
+  const probes = await Promise.all(remaining.map(probeFrame));
   return probes.find((f) => f !== null) ?? null;
 }
 
