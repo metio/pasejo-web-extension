@@ -261,85 +261,133 @@ async function pickPreferredStore(stores, hostname) {
 // every visit. Keyed by raw hostname (not registrable domain) because
 // the popup doesn't bundle a public-suffix list; `mail.example.com` and
 // `www.example.com` therefore have independent memories, which is fine
-// for v1 and matches what most users expect anyway.
-const STORE_MEMORY_PREFIX = "store-for-host:";
+// and matches what most users expect anyway.
+//
+// The entire host→store memory lives under one storage key as a single
+// object `{ [hostname]: { store: string, lastUsedAt: number } }`. One
+// key means each touch is one `get` + one `set`, so the data and its
+// eviction order cannot drift apart — there is no separate index that
+// might survive a crash mid-write and leave orphan per-host entries.
+// Eviction order is derived from `lastUsedAt` rather than stored
+// explicitly: the LRU victim is whichever entry has the smallest
+// timestamp. Within-popup concurrent writes are serialised through
+// `hostStoreWriteQueue` below.
+const HOST_STORE_KEY = "pasejo:host-stores";
 
 // Soft cap on the number of hosts whose store choice we remember.
-// chrome.storage.local's quota is 5 MB, and each entry is on the order
-// of fifty bytes, so the quota itself sits at ~100K entries — but
-// letting the map grow unbounded is a code smell and lets a never-used
+// chrome.storage.local's 5 MB quota would tolerate orders of magnitude
+// more entries, but letting the map grow unbounded lets a never-used
 // browser profile silently accumulate every site the user has ever
 // visited. 500 covers any realistic site list with headroom; once the
-// cap is reached, the host that was longest ago touched falls off the
-// front of the index whenever a new host is added.
+// cap is reached, the host with the oldest `lastUsedAt` falls off
+// whenever a new host is added.
 const MAX_REMEMBERED_HOSTS = 500;
 
-// Tracks the eviction order for the host→store memory. Element 0 is
-// the next host to be evicted; the last element is the host most
-// recently written. The index lives under a fixed key whose prefix
-// cannot collide with a literal hostname (those all live under
-// `STORE_MEMORY_PREFIX`).
-const STORE_MEMORY_INDEX_KEY = "pasejo:host-store-index";
+// Coerces an arbitrary value read from storage into a well-formed
+// `{[hostname]: {store, lastUsedAt}}` map. The storage layer hands back
+// whatever the previous writer put there, including values from a
+// crashed-mid-write or a manually-edited dev-tools session, so this
+// helper is the trust boundary that keeps the rest of the popup safe to
+// dereference. Anything that doesn't match the shape is dropped
+// silently; we'd rather lose one host's preference than refuse to
+// remember any new picks.
+function coerceHostStoreMap(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+  const out = {};
+  for (const [hostname, entry] of Object.entries(raw)) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const store = entry.store;
+    const lastUsedAt = entry.lastUsedAt;
+    if (typeof store !== "string" || typeof lastUsedAt !== "number") {
+      continue;
+    }
+    out[hostname] = { store, lastUsedAt };
+  }
+  return out;
+}
+
+// LRU-trims `map` down to `cap` entries (oldest `lastUsedAt` first).
+// Returns the cleaned map and the hostnames that were evicted so the
+// caller can log / surface them. Pure — no storage I/O — so the
+// trimming policy is testable in isolation from the read-write loop.
+// Ties broken by hostname string order so the result is deterministic
+// even when two entries happen to share a `lastUsedAt` (e.g. tests
+// using fake timers).
+function pruneMapToCap(map, cap) {
+  const entries = Object.entries(map);
+  if (entries.length <= cap) {
+    return { map: { ...map }, removed: [] };
+  }
+  entries.sort((a, b) => {
+    const diff = a[1].lastUsedAt - b[1].lastUsedAt;
+    return diff !== 0 ? diff : a[0].localeCompare(b[0]);
+  });
+  const removed = entries.slice(0, entries.length - cap).map(([h]) => h);
+  const kept = Object.fromEntries(entries.slice(entries.length - cap));
+  return { map: kept, removed };
+}
+
+// Module-local promise chain that serialises every host-store write
+// against every other write originating in the same popup. The browser
+// has no `storage.local.update(fn)` primitive, so without this two
+// rapid-fire `rememberStoreForHost` calls — e.g. the user toggling the
+// dropdown twice in quick succession — would race their `get` /
+// `modify` / `set` triples and one update would silently overwrite the
+// other. Cross-popup writes (two popup windows open at once) still
+// race at the storage layer, but the worst case there is "one user
+// choice is overwritten by the other's", not the open-ended drift the
+// old two-key schema allowed.
+let hostStoreWriteQueue = Promise.resolve();
+
+function enqueueHostStoreWrite(task) {
+  const pending = hostStoreWriteQueue.then(task);
+  // Swallow rejections on the chain so one failed write doesn't poison
+  // every subsequent enqueue. The task is wrapped in its own try/catch
+  // by the caller — this is defence in depth.
+  hostStoreWriteQueue = pending.then(
+    () => undefined,
+    () => undefined,
+  );
+  return pending;
+}
 
 async function rememberStoreForHost(hostname, storeName) {
   if (!hostname || !api.storage?.local) {
     return;
   }
-  const key = STORE_MEMORY_PREFIX + hostname;
-  try {
-    if (storeName) {
-      await api.storage.local.set({ [key]: storeName });
-      await touchHostInIndex(hostname);
-    } else {
-      await api.storage.local.remove(key);
-      await dropHostFromIndex(hostname);
+  return enqueueHostStoreWrite(async () => {
+    try {
+      const existing = await api.storage.local.get(HOST_STORE_KEY);
+      const map = coerceHostStoreMap(existing[HOST_STORE_KEY]);
+      if (storeName) {
+        map[hostname] = { store: storeName, lastUsedAt: Date.now() };
+      } else if (hostname in map) {
+        delete map[hostname];
+      } else {
+        // No write needed: clearing a hostname that wasn't remembered.
+        return;
+      }
+      const { map: trimmed } = pruneMapToCap(map, MAX_REMEMBERED_HOSTS);
+      await api.storage.local.set({ [HOST_STORE_KEY]: trimmed });
+    } catch (_) {
+      // Storage write failures are non-fatal — the user just doesn't
+      // get the per-host memory until storage works again.
     }
-  } catch (_) {
-    // Storage write failures are non-fatal — the user just doesn't get
-    // the per-host memory until storage works again.
-  }
-}
-
-// Bumps `hostname` to the most-recent end of the eviction index and
-// removes from storage any hosts that overflow the cap. The index and
-// each per-host entry live in the same `chrome.storage.local` so the
-// state survives popup teardown without any in-memory bookkeeping.
-async function touchHostInIndex(hostname) {
-  const existing = await api.storage.local.get(STORE_MEMORY_INDEX_KEY);
-  const raw = existing[STORE_MEMORY_INDEX_KEY];
-  // A non-array value (missing key, or corrupted previous write) is
-  // treated as an empty index — we'd rather lose one cycle of eviction
-  // memory than refuse to write.
-  const index = (Array.isArray(raw) ? raw : []).filter((h) => h !== hostname);
-  index.push(hostname);
-  while (index.length > MAX_REMEMBERED_HOSTS) {
-    const evicted = index.shift();
-    await api.storage.local.remove(STORE_MEMORY_PREFIX + evicted);
-  }
-  await api.storage.local.set({ [STORE_MEMORY_INDEX_KEY]: index });
-}
-
-async function dropHostFromIndex(hostname) {
-  const existing = await api.storage.local.get(STORE_MEMORY_INDEX_KEY);
-  const raw = existing[STORE_MEMORY_INDEX_KEY];
-  if (!Array.isArray(raw)) {
-    return;
-  }
-  const index = raw.filter((h) => h !== hostname);
-  if (index.length === raw.length) {
-    return;
-  }
-  await api.storage.local.set({ [STORE_MEMORY_INDEX_KEY]: index });
+  });
 }
 
 async function recallStoreForHost(hostname) {
   if (!hostname || !api.storage?.local) {
     return null;
   }
-  const key = STORE_MEMORY_PREFIX + hostname;
   try {
-    const result = await api.storage.local.get(key);
-    return result[key] ?? null;
+    const result = await api.storage.local.get(HOST_STORE_KEY);
+    const map = coerceHostStoreMap(result[HOST_STORE_KEY]);
+    return map[hostname]?.store ?? null;
   } catch (_) {
     return null;
   }

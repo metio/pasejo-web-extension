@@ -18,8 +18,7 @@ const EXPOSED = [
   "ALL_STORES",
   "MAX_REMEMBERED_HOSTS",
   "MAX_STATUS_CHARS",
-  "STORE_MEMORY_PREFIX",
-  "STORE_MEMORY_INDEX_KEY",
+  "HOST_STORE_KEY",
   "truncateStatus",
   "setStatus",
   "sendBackground",
@@ -32,8 +31,8 @@ const EXPOSED = [
   "pickPreferredStore",
   "rememberStoreForHost",
   "recallStoreForHost",
-  "touchHostInIndex",
-  "dropHostFromIndex",
+  "coerceHostStoreMap",
+  "pruneMapToCap",
   "renderHostError",
   "runQuery",
   "runMultiStoreQuery",
@@ -600,7 +599,9 @@ describe("popup.js", () => {
     it("returns ALL_STORES when remembered and multiple stores exist", async () => {
       const { api, popup } = await setUp();
       api.storage.local.get.mockResolvedValueOnce({
-        "store-for-host:example.com": popup.ALL_STORES,
+        [popup.HOST_STORE_KEY]: {
+          "example.com": { store: popup.ALL_STORES, lastUsedAt: 1 },
+        },
       });
       await expect(
         popup.pickPreferredStore(
@@ -616,7 +617,9 @@ describe("popup.js", () => {
     it("falls back from ALL_STORES to null when only one store exists", async () => {
       const { api, popup } = await setUp();
       api.storage.local.get.mockResolvedValueOnce({
-        "store-for-host:example.com": popup.ALL_STORES,
+        [popup.HOST_STORE_KEY]: {
+          "example.com": { store: popup.ALL_STORES, lastUsedAt: 1 },
+        },
       });
       await expect(
         popup.pickPreferredStore([{ name: "a", default: true }], "example.com"),
@@ -626,7 +629,9 @@ describe("popup.js", () => {
     it("returns the remembered store name when it still exists in the list", async () => {
       const { api, popup } = await setUp();
       api.storage.local.get.mockResolvedValueOnce({
-        "store-for-host:example.com": "b",
+        [popup.HOST_STORE_KEY]: {
+          "example.com": { store: "b", lastUsedAt: 1 },
+        },
       });
       await expect(
         popup.pickPreferredStore(
@@ -642,7 +647,9 @@ describe("popup.js", () => {
     it("returns null when the remembered store has since been deleted", async () => {
       const { api, popup } = await setUp();
       api.storage.local.get.mockResolvedValueOnce({
-        "store-for-host:example.com": "gone",
+        [popup.HOST_STORE_KEY]: {
+          "example.com": { store: "gone", lastUsedAt: 1 },
+        },
       });
       await expect(
         popup.pickPreferredStore(
@@ -653,27 +660,259 @@ describe("popup.js", () => {
     });
   });
 
-  describe("rememberStoreForHost / recallStoreForHost", () => {
-    it("stores under the per-host prefix when both args are present", async () => {
-      const { api, popup } = await setUp();
-      await popup.rememberStoreForHost("example.com", "personal");
-      expect(api.storage.local.set).toHaveBeenCalledWith({
-        "store-for-host:example.com": "personal",
+  describe("coerceHostStoreMap (pure helper, item B)", () => {
+    it("returns an empty map for null", async () => {
+      const { popup } = await setUp();
+      expect(popup.coerceHostStoreMap(null)).toEqual({});
+    });
+
+    it("returns an empty map for undefined (missing storage key)", async () => {
+      const { popup } = await setUp();
+      expect(popup.coerceHostStoreMap(undefined)).toEqual({});
+    });
+
+    it("returns an empty map for a non-object value (string, number, etc.)", async () => {
+      const { popup } = await setUp();
+      expect(popup.coerceHostStoreMap("broken")).toEqual({});
+      expect(popup.coerceHostStoreMap(42)).toEqual({});
+      expect(popup.coerceHostStoreMap(true)).toEqual({});
+    });
+
+    it("returns an empty map for an array (storage value was overwritten by an older array-shaped value)", async () => {
+      const { popup } = await setUp();
+      expect(popup.coerceHostStoreMap(["a", "b"])).toEqual({});
+    });
+
+    it("passes through a well-formed map", async () => {
+      const { popup } = await setUp();
+      const raw = {
+        "example.com": { store: "personal", lastUsedAt: 100 },
+        "github.com": { store: "work", lastUsedAt: 200 },
+      };
+      expect(popup.coerceHostStoreMap(raw)).toEqual(raw);
+    });
+
+    it("drops entries whose value is not an object", async () => {
+      const { popup } = await setUp();
+      const raw = {
+        "ok.test": { store: "a", lastUsedAt: 1 },
+        "bad.test": "scalar",
+        "null.test": null,
+      };
+      expect(popup.coerceHostStoreMap(raw)).toEqual({
+        "ok.test": { store: "a", lastUsedAt: 1 },
       });
     });
 
-    it("removes the key when the store argument is null/empty", async () => {
+    it("drops entries whose store is not a string", async () => {
+      const { popup } = await setUp();
+      const raw = {
+        "ok.test": { store: "a", lastUsedAt: 1 },
+        "bad.test": { store: 42, lastUsedAt: 1 },
+      };
+      expect(popup.coerceHostStoreMap(raw)).toEqual({
+        "ok.test": { store: "a", lastUsedAt: 1 },
+      });
+    });
+
+    it("drops entries whose lastUsedAt is not a number", async () => {
+      const { popup } = await setUp();
+      const raw = {
+        "ok.test": { store: "a", lastUsedAt: 1 },
+        "bad.test": { store: "a", lastUsedAt: "earlier" },
+      };
+      expect(popup.coerceHostStoreMap(raw)).toEqual({
+        "ok.test": { store: "a", lastUsedAt: 1 },
+      });
+    });
+
+    it("keeps only the recognised fields on each entry (defensive against schema drift)", async () => {
+      const { popup } = await setUp();
+      const raw = {
+        "example.com": {
+          store: "a",
+          lastUsedAt: 5,
+          // Unknown future field — must not leak into the kept entry
+          // (which would cause the next write to round-trip a value we
+          // don't understand).
+          comment: "leak",
+        },
+      };
+      expect(popup.coerceHostStoreMap(raw)).toEqual({
+        "example.com": { store: "a", lastUsedAt: 5 },
+      });
+    });
+  });
+
+  describe("pruneMapToCap (pure helper, item B)", () => {
+    it("returns the input untouched when it is at or under the cap", async () => {
+      const { popup } = await setUp();
+      const map = {
+        a: { store: "x", lastUsedAt: 3 },
+        b: { store: "x", lastUsedAt: 1 },
+      };
+      expect(popup.pruneMapToCap(map, 5)).toEqual({ map, removed: [] });
+      expect(popup.pruneMapToCap(map, 2)).toEqual({ map, removed: [] });
+    });
+
+    it("drops the entry with the oldest lastUsedAt when over the cap by one", async () => {
+      const { popup } = await setUp();
+      const map = {
+        a: { store: "x", lastUsedAt: 3 },
+        b: { store: "x", lastUsedAt: 1 },
+        c: { store: "x", lastUsedAt: 2 },
+      };
+      const { map: kept, removed } = popup.pruneMapToCap(map, 2);
+      expect(removed).toEqual(["b"]);
+      expect(Object.keys(kept).sort()).toEqual(["a", "c"]);
+    });
+
+    it("drops multiple entries when over the cap by several", async () => {
+      const { popup } = await setUp();
+      const map = {
+        a: { store: "x", lastUsedAt: 5 },
+        b: { store: "x", lastUsedAt: 1 },
+        c: { store: "x", lastUsedAt: 3 },
+        d: { store: "x", lastUsedAt: 2 },
+        e: { store: "x", lastUsedAt: 4 },
+      };
+      const { map: kept, removed } = popup.pruneMapToCap(map, 2);
+      // Three oldest (1, 2, 3 → b, d, c) get evicted; the two newest
+      // (4, 5 → e, a) survive.
+      expect(removed.sort()).toEqual(["b", "c", "d"]);
+      expect(Object.keys(kept).sort()).toEqual(["a", "e"]);
+    });
+
+    it("breaks ties on lastUsedAt by hostname string order (deterministic)", async () => {
+      const { popup } = await setUp();
+      const map = {
+        zebra: { store: "x", lastUsedAt: 1 },
+        alpha: { store: "x", lastUsedAt: 1 },
+      };
+      const { removed } = popup.pruneMapToCap(map, 1);
+      // Tie at lastUsedAt:1 → alphabetical winner is "alpha", so
+      // alpha falls first and zebra is kept.
+      expect(removed).toEqual(["alpha"]);
+    });
+
+    it("returns an empty map and no removals for an empty input", async () => {
+      const { popup } = await setUp();
+      expect(popup.pruneMapToCap({}, 5)).toEqual({ map: {}, removed: [] });
+    });
+
+    it("does not mutate its input", async () => {
+      const { popup } = await setUp();
+      const map = {
+        a: { store: "x", lastUsedAt: 3 },
+        b: { store: "x", lastUsedAt: 1 },
+      };
+      const snapshot = JSON.parse(JSON.stringify(map));
+      popup.pruneMapToCap(map, 1);
+      expect(map).toEqual(snapshot);
+    });
+  });
+
+  describe("rememberStoreForHost / recallStoreForHost (item B)", () => {
+    // Helper: a Date.now stub that returns predictable, monotonically
+    // increasing values so the timestamps the production code writes
+    // are testable without leaking into wall-clock-dependent assertions.
+    function stubMonotonicNow() {
+      let t = 1000;
+      return vi.spyOn(Date, "now").mockImplementation(() => ++t);
+    }
+
+    it("writes the host→store entry under the single map key with a current timestamp", async () => {
       const { api, popup } = await setUp();
+      stubMonotonicNow();
+      api.storage.local.get.mockResolvedValueOnce({});
+      await popup.rememberStoreForHost("example.com", "personal");
+      expect(api.storage.local.set).toHaveBeenCalledWith({
+        [popup.HOST_STORE_KEY]: {
+          "example.com": { store: "personal", lastUsedAt: 1001 },
+        },
+      });
+    });
+
+    it("merges new entries into the existing map (does not overwrite siblings)", async () => {
+      const { api, popup } = await setUp();
+      stubMonotonicNow();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.HOST_STORE_KEY]: {
+          "github.com": { store: "work", lastUsedAt: 100 },
+        },
+      });
+      await popup.rememberStoreForHost("example.com", "personal");
+      const written = api.storage.local.set.mock.calls.at(-1)[0][
+        popup.HOST_STORE_KEY
+      ];
+      expect(written["github.com"]).toEqual({
+        store: "work",
+        lastUsedAt: 100,
+      });
+      expect(written["example.com"].store).toBe("personal");
+    });
+
+    it("re-touching an existing host updates only its lastUsedAt and store", async () => {
+      const { api, popup } = await setUp();
+      stubMonotonicNow();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.HOST_STORE_KEY]: {
+          "example.com": { store: "old", lastUsedAt: 100 },
+        },
+      });
+      await popup.rememberStoreForHost("example.com", "new");
+      const written = api.storage.local.set.mock.calls.at(-1)[0][
+        popup.HOST_STORE_KEY
+      ];
+      expect(written["example.com"].store).toBe("new");
+      expect(written["example.com"].lastUsedAt).toBeGreaterThan(100);
+    });
+
+    it("removes a host from the map when the store argument is empty", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.HOST_STORE_KEY]: {
+          "example.com": { store: "personal", lastUsedAt: 100 },
+          "github.com": { store: "work", lastUsedAt: 200 },
+        },
+      });
       await popup.rememberStoreForHost("example.com", "");
-      expect(api.storage.local.remove).toHaveBeenCalledWith(
-        "store-for-host:example.com",
-      );
+      expect(api.storage.local.set).toHaveBeenCalledWith({
+        [popup.HOST_STORE_KEY]: {
+          "github.com": { store: "work", lastUsedAt: 200 },
+        },
+      });
+    });
+
+    it("clearing a host that was never remembered does not issue a set call", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.HOST_STORE_KEY]: {
+          "other.test": { store: "x", lastUsedAt: 1 },
+        },
+      });
+      await popup.rememberStoreForHost("never-seen.test", "");
+      expect(api.storage.local.set).not.toHaveBeenCalled();
+    });
+
+    it("clearing the last host writes an empty map (subsequent reads see {})", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.HOST_STORE_KEY]: {
+          "only.test": { store: "x", lastUsedAt: 1 },
+        },
+      });
+      await popup.rememberStoreForHost("only.test", "");
+      expect(api.storage.local.set).toHaveBeenCalledWith({
+        [popup.HOST_STORE_KEY]: {},
+      });
     });
 
     it("no-ops without throwing when hostname is missing", async () => {
       const { api, popup } = await setUp();
       await popup.rememberStoreForHost(null, "personal");
       expect(api.storage.local.set).not.toHaveBeenCalled();
+      expect(api.storage.local.get).not.toHaveBeenCalled();
     });
 
     it("no-ops without throwing when storage.local is unavailable", async () => {
@@ -684,25 +923,68 @@ describe("popup.js", () => {
 
     it("swallows storage write failures so the popup keeps working", async () => {
       const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({});
       api.storage.local.set.mockRejectedValueOnce(new Error("quota exceeded"));
       await expect(
         popup.rememberStoreForHost("example.com", "personal"),
       ).resolves.toBeUndefined();
     });
 
+    it("swallows storage read failures so a corrupt storage layer doesn't block writes from queueing", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockRejectedValueOnce(new Error("disk gone"));
+      await expect(
+        popup.rememberStoreForHost("example.com", "personal"),
+      ).resolves.toBeUndefined();
+    });
+
+    it("treats a corrupt (non-object) stored value as an empty map", async () => {
+      const { api, popup } = await setUp();
+      stubMonotonicNow();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.HOST_STORE_KEY]: "i-am-broken",
+      });
+      await popup.rememberStoreForHost("new.test", "personal");
+      const written = api.storage.local.set.mock.calls.at(-1)[0][
+        popup.HOST_STORE_KEY
+      ];
+      expect(Object.keys(written)).toEqual(["new.test"]);
+      expect(written["new.test"].store).toBe("personal");
+    });
+
     it("recall returns the stored value", async () => {
       const { api, popup } = await setUp();
       api.storage.local.get.mockResolvedValueOnce({
-        "store-for-host:example.com": "personal",
+        [popup.HOST_STORE_KEY]: {
+          "example.com": { store: "personal", lastUsedAt: 100 },
+        },
       });
       await expect(popup.recallStoreForHost("example.com")).resolves.toBe(
         "personal",
       );
     });
 
-    it("recall returns null when no entry exists", async () => {
+    it("recall returns null when no entry exists for this host (map missing)", async () => {
       const { api, popup } = await setUp();
       api.storage.local.get.mockResolvedValueOnce({});
+      await expect(popup.recallStoreForHost("example.com")).resolves.toBeNull();
+    });
+
+    it("recall returns null when the map exists but the host is absent", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.HOST_STORE_KEY]: {
+          "other.test": { store: "x", lastUsedAt: 1 },
+        },
+      });
+      await expect(popup.recallStoreForHost("example.com")).resolves.toBeNull();
+    });
+
+    it("recall returns null when the stored value is corrupt (non-object)", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.HOST_STORE_KEY]: "i-am-broken",
+      });
       await expect(popup.recallStoreForHost("example.com")).resolves.toBeNull();
     });
 
@@ -724,159 +1006,184 @@ describe("popup.js", () => {
     });
   });
 
-  describe("per-host memory eviction (item N)", () => {
-    it("appends new hosts to the index in touch order", async () => {
+  describe("per-host memory eviction (item B)", () => {
+    it("evicts the oldest host (by lastUsedAt) when the cap is exceeded", async () => {
       const { api, popup } = await setUp();
+      vi.spyOn(Date, "now").mockReturnValue(9_999_999);
+      // Seed a full map. Each entry has a distinct, monotonically
+      // increasing timestamp — host0 is the oldest, hostN-1 the newest.
+      const full = {};
+      for (let i = 0; i < popup.MAX_REMEMBERED_HOSTS; i += 1) {
+        full[`host${i}.test`] = { store: "x", lastUsedAt: i + 1 };
+      }
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.HOST_STORE_KEY]: full,
+      });
+      await popup.rememberStoreForHost("new.test", "personal");
+      const written = api.storage.local.set.mock.calls.at(-1)[0][
+        popup.HOST_STORE_KEY
+      ];
+      // host0 was the oldest — it should be the one evicted.
+      expect(written).not.toHaveProperty("host0.test");
+      expect(written).toHaveProperty("new.test");
+      // The map size is capped, not just the new entry inserted.
+      expect(Object.keys(written)).toHaveLength(popup.MAX_REMEMBERED_HOSTS);
+    });
+
+    it("evicts every overflowing host in one call when the seed map is multiple over the cap", async () => {
+      const { api, popup } = await setUp();
+      vi.spyOn(Date, "now").mockReturnValue(9_999_999);
+      // A map that is two over the cap (could happen after a manual
+      // import or a future cap change) must be trimmed back to exactly
+      // `MAX_REMEMBERED_HOSTS` entries in one write.
+      const overflow = {};
+      for (let i = 0; i < popup.MAX_REMEMBERED_HOSTS + 1; i += 1) {
+        overflow[`host${i}.test`] = { store: "x", lastUsedAt: i + 1 };
+      }
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.HOST_STORE_KEY]: overflow,
+      });
+      await popup.rememberStoreForHost("new.test", "personal");
+      const written = api.storage.local.set.mock.calls.at(-1)[0][
+        popup.HOST_STORE_KEY
+      ];
+      expect(Object.keys(written)).toHaveLength(popup.MAX_REMEMBERED_HOSTS);
+      // Two oldest (host0, host1) evicted to make room for new.test
+      // while still landing at the cap.
+      expect(written).not.toHaveProperty("host0.test");
+      expect(written).not.toHaveProperty("host1.test");
+      expect(written).toHaveProperty("new.test");
+    });
+
+    it("re-touching an existing host does NOT evict anyone — same entry count, fresher timestamp", async () => {
+      const { api, popup } = await setUp();
+      vi.spyOn(Date, "now").mockReturnValue(10_000_000);
+      const full = {};
+      for (let i = 0; i < popup.MAX_REMEMBERED_HOSTS; i += 1) {
+        full[`host${i}.test`] = { store: "x", lastUsedAt: i + 1 };
+      }
+      api.storage.local.get.mockResolvedValueOnce({
+        [popup.HOST_STORE_KEY]: full,
+      });
+      // Re-touching host0 — the oldest — must keep it (not evict it)
+      // because it's the entry being written.
+      await popup.rememberStoreForHost("host0.test", "personal");
+      const written = api.storage.local.set.mock.calls.at(-1)[0][
+        popup.HOST_STORE_KEY
+      ];
+      expect(written).toHaveProperty("host0.test");
+      expect(written["host0.test"].store).toBe("personal");
+      expect(written["host0.test"].lastUsedAt).toBe(10_000_000);
+      expect(Object.keys(written)).toHaveLength(popup.MAX_REMEMBERED_HOSTS);
+    });
+  });
+
+  describe("write serialisation (item B — the load-bearing race fix)", () => {
+    // The bug: two `rememberStoreForHost` calls dispatched back-to-back
+    // without `await` (the dropdown change handler is fire-and-forget)
+    // both issue their `get` before either `set` lands. Both `get`s
+    // see the same pre-image, both modify it, the second `set`
+    // overwrites the first — losing one host's update.
+    //
+    // The fix: `rememberStoreForHost` queues onto a module-local promise
+    // chain so within-popup writes are serialised. The test below
+    // proves the queue does what it claims by interleaving two slow
+    // `get`s and asserting that the second `get` happens AFTER the
+    // first `set` (rather than before it).
+
+    it("serialises two concurrent writes so the second observes the first's set", async () => {
+      const { api, popup } = await setUp();
+      vi.spyOn(Date, "now").mockReturnValue(5_000);
+
+      const ops = [];
+      const get1 = deferred();
+      const get2 = deferred();
+      api.storage.local.get = vi
+        .fn()
+        // First write's read — held until we explicitly resolve it.
+        .mockImplementationOnce(() => {
+          ops.push("get1");
+          return get1.promise;
+        })
+        // Second write's read — held until the first write's set has
+        // already fired (the queue must enforce this ordering).
+        .mockImplementationOnce(() => {
+          ops.push("get2");
+          return get2.promise;
+        });
+      api.storage.local.set = vi.fn().mockImplementation(async (arg) => {
+        ops.push(
+          `set:${Object.keys(arg[popup.HOST_STORE_KEY] ?? {}).join(",")}`,
+        );
+      });
+
+      // Two concurrent writes — exactly what the fire-and-forget
+      // dropdown change handler does on rapid clicks. Without the
+      // queue, both `get` calls would have happened before either
+      // `set`, so `ops` would interleave to ['get1','get2',...].
+      const w1 = popup.rememberStoreForHost("a.test", "store-a");
+      const w2 = popup.rememberStoreForHost("b.test", "store-b");
+
+      // Let the first `get` proceed and its `set` land before the
+      // second queue slot is allowed to wake up.
+      get1.resolve({});
+      await flushAsync();
+      // At this point: queue slot 1 has finished its set; queue slot 2
+      // has fired its `get` (because the queue runs them sequentially
+      // and the await on get2.promise is pending).
+      get2.resolve({
+        [popup.HOST_STORE_KEY]: {
+          "a.test": { store: "store-a", lastUsedAt: 5_000 },
+        },
+      });
+      await Promise.all([w1, w2]);
+
+      // The ordering: get1 → set with a.test → get2 → set with both.
+      // The crucial property is that `get2` appears AFTER `set:a.test`,
+      // not before — that's exactly the serialisation guarantee.
+      const get1Idx = ops.indexOf("get1");
+      const set1Idx = ops.findIndex((o) => o === "set:a.test");
+      const get2Idx = ops.indexOf("get2");
+      const set2Idx = ops.findIndex((o, i) => i > set1Idx && o.startsWith("set:"));
+      expect(get1Idx).toBeGreaterThanOrEqual(0);
+      expect(set1Idx).toBeGreaterThan(get1Idx);
+      expect(get2Idx).toBeGreaterThan(set1Idx);
+      expect(set2Idx).toBeGreaterThan(get2Idx);
+
+      // And the final stored map must contain BOTH hosts — the bug's
+      // hallmark was b.test's entry replacing a.test's because both
+      // had read the same pre-image. With the queue, the second write
+      // sees a.test already stored and writes b.test alongside it.
+      const lastWrite = api.storage.local.set.mock.calls.at(-1)[0][
+        popup.HOST_STORE_KEY
+      ];
+      expect(lastWrite).toHaveProperty("a.test");
+      expect(lastWrite).toHaveProperty("b.test");
+    });
+
+    it("a failed write does not poison the queue — later writes still run", async () => {
+      const { api, popup } = await setUp();
+      vi.spyOn(Date, "now").mockReturnValue(7_000);
+      // First write fails at the `set` step.
       api.storage.local.get
         .mockResolvedValueOnce({})
-        .mockResolvedValueOnce({
-          [popup.STORE_MEMORY_INDEX_KEY]: ["example.com"],
-        })
-        .mockResolvedValueOnce({
-          [popup.STORE_MEMORY_INDEX_KEY]: ["example.com", "github.com"],
-        });
-      await popup.rememberStoreForHost("example.com", "a");
-      await popup.rememberStoreForHost("github.com", "a");
-      await popup.rememberStoreForHost("gitlab.com", "a");
-      expect(api.storage.local.set).toHaveBeenCalledWith({
-        [popup.STORE_MEMORY_INDEX_KEY]: ["example.com"],
-      });
-      expect(api.storage.local.set).toHaveBeenCalledWith({
-        [popup.STORE_MEMORY_INDEX_KEY]: ["example.com", "github.com"],
-      });
-      expect(api.storage.local.set).toHaveBeenCalledWith({
-        [popup.STORE_MEMORY_INDEX_KEY]: ["example.com", "github.com", "gitlab.com"],
-      });
-    });
+        .mockResolvedValueOnce({});
+      api.storage.local.set
+        .mockRejectedValueOnce(new Error("storage gone"))
+        .mockResolvedValueOnce(undefined);
 
-    it("re-touching an existing host moves it to the end without duplicating", async () => {
-      const { api, popup } = await setUp();
-      api.storage.local.get.mockResolvedValueOnce({
-        [popup.STORE_MEMORY_INDEX_KEY]: ["a.test", "b.test", "c.test"],
-      });
-      await popup.rememberStoreForHost("a.test", "personal");
-      expect(api.storage.local.set).toHaveBeenCalledWith({
-        [popup.STORE_MEMORY_INDEX_KEY]: ["b.test", "c.test", "a.test"],
-      });
-    });
+      const w1 = popup.rememberStoreForHost("a.test", "store-a");
+      const w2 = popup.rememberStoreForHost("b.test", "store-b");
+      await Promise.all([w1, w2]);
 
-    it("treats a missing index key as empty", async () => {
-      const { api, popup } = await setUp();
-      api.storage.local.get.mockResolvedValueOnce({}); // no index key
-      await popup.rememberStoreForHost("new.test", "personal");
-      expect(api.storage.local.set).toHaveBeenCalledWith({
-        [popup.STORE_MEMORY_INDEX_KEY]: ["new.test"],
-      });
-    });
-
-    it("treats a corrupt (non-array) index value as empty", async () => {
-      const { api, popup } = await setUp();
-      api.storage.local.get.mockResolvedValueOnce({
-        [popup.STORE_MEMORY_INDEX_KEY]: "i-am-broken",
-      });
-      await popup.rememberStoreForHost("new.test", "personal");
-      expect(api.storage.local.set).toHaveBeenCalledWith({
-        [popup.STORE_MEMORY_INDEX_KEY]: ["new.test"],
-      });
-    });
-
-    it("evicts the oldest host (and its storage entry) when the cap is exceeded", async () => {
-      const { api, popup } = await setUp();
-      // Seed a full index. Touching a brand-new host pushes the cap
-      // over and must drop the front of the index — both from the
-      // index itself and from `chrome.storage.local`.
-      const fullIndex = Array.from(
-        { length: popup.MAX_REMEMBERED_HOSTS },
-        (_, i) => `host${i}.test`,
-      );
-      api.storage.local.get.mockResolvedValueOnce({
-        [popup.STORE_MEMORY_INDEX_KEY]: [...fullIndex],
-      });
-      await popup.rememberStoreForHost("new.test", "personal");
-      expect(api.storage.local.remove).toHaveBeenCalledWith(
-        `${popup.STORE_MEMORY_PREFIX}host0.test`,
-      );
-      const expectedIndex = [
-        ...Array.from(
-          { length: popup.MAX_REMEMBERED_HOSTS - 1 },
-          (_, i) => `host${i + 1}.test`,
-        ),
-        "new.test",
-      ];
-      expect(api.storage.local.set).toHaveBeenCalledWith({
-        [popup.STORE_MEMORY_INDEX_KEY]: expectedIndex,
-      });
-    });
-
-    it("evicts every overflowing host in one call when the seed index is multiple over the cap", async () => {
-      const { api, popup } = await setUp();
-      // An index that is two over the cap (could happen after a manual
-      // import or a cap change in a future release) must be trimmed
-      // back to exactly `MAX_REMEMBERED_HOSTS` entries in one go.
-      const overflowIndex = Array.from(
-        { length: popup.MAX_REMEMBERED_HOSTS + 1 },
-        (_, i) => `host${i}.test`,
-      );
-      api.storage.local.get.mockResolvedValueOnce({
-        [popup.STORE_MEMORY_INDEX_KEY]: [...overflowIndex],
-      });
-      await popup.rememberStoreForHost("new.test", "personal");
-      expect(api.storage.local.remove).toHaveBeenCalledWith(
-        `${popup.STORE_MEMORY_PREFIX}host0.test`,
-      );
-      expect(api.storage.local.remove).toHaveBeenCalledWith(
-        `${popup.STORE_MEMORY_PREFIX}host1.test`,
-      );
-      // After two evictions the surviving index has exactly the cap's
-      // worth of entries — `MAX_REMEMBERED_HOSTS - 1` originals plus
-      // the new one.
-      const indexCall = api.storage.local.set.mock.calls.find(
-        ([arg]) => popup.STORE_MEMORY_INDEX_KEY in arg,
-      );
-      expect(indexCall[0][popup.STORE_MEMORY_INDEX_KEY]).toHaveLength(
-        popup.MAX_REMEMBERED_HOSTS,
-      );
-    });
-
-    it("removes the host from the index when the store is cleared", async () => {
-      const { api, popup } = await setUp();
-      api.storage.local.get.mockResolvedValueOnce({
-        [popup.STORE_MEMORY_INDEX_KEY]: ["a.test", "b.test", "c.test"],
-      });
-      await popup.rememberStoreForHost("b.test", "");
-      expect(api.storage.local.remove).toHaveBeenCalledWith(
-        `${popup.STORE_MEMORY_PREFIX}b.test`,
-      );
-      expect(api.storage.local.set).toHaveBeenCalledWith({
-        [popup.STORE_MEMORY_INDEX_KEY]: ["a.test", "c.test"],
-      });
-    });
-
-    it("clearing a host that was never in the index does not rewrite it", async () => {
-      const { api, popup } = await setUp();
-      api.storage.local.get.mockResolvedValueOnce({
-        [popup.STORE_MEMORY_INDEX_KEY]: ["a.test", "b.test"],
-      });
-      await popup.rememberStoreForHost("never-seen.test", "");
-      // The host entry remove call always fires; the index set call
-      // must NOT because nothing in the index changed.
-      expect(api.storage.local.remove).toHaveBeenCalledWith(
-        `${popup.STORE_MEMORY_PREFIX}never-seen.test`,
-      );
-      const indexWrites = api.storage.local.set.mock.calls.filter(
-        ([arg]) => popup.STORE_MEMORY_INDEX_KEY in arg,
-      );
-      expect(indexWrites).toHaveLength(0);
-    });
-
-    it("clearing a host when the index is missing/corrupt is a no-op", async () => {
-      const { api, popup } = await setUp();
-      api.storage.local.get.mockResolvedValueOnce({});
-      await popup.rememberStoreForHost("a.test", "");
-      const indexWrites = api.storage.local.set.mock.calls.filter(
-        ([arg]) => popup.STORE_MEMORY_INDEX_KEY in arg,
-      );
-      expect(indexWrites).toHaveLength(0);
+      // Two sets attempted: the first rejected, the second succeeded.
+      expect(api.storage.local.set).toHaveBeenCalledTimes(2);
+      // And the second write's payload reached the storage layer
+      // intact — proving the queue's chain didn't get stuck on the
+      // rejected first write.
+      const secondCall = api.storage.local.set.mock.calls[1][0];
+      expect(secondCall).toHaveProperty(popup.HOST_STORE_KEY);
+      expect(secondCall[popup.HOST_STORE_KEY]).toHaveProperty("b.test");
     });
   });
 
@@ -2125,7 +2432,9 @@ describe("popup.js", () => {
           },
         });
       api.storage.local.get.mockResolvedValue({
-        "store-for-host:example.com": "work",
+        [popup.HOST_STORE_KEY]: {
+          "example.com": { store: "work", lastUsedAt: 100 },
+        },
       });
       await popup.refreshStoresAndQuery();
       // list_stores then query — two background calls in order:
@@ -2179,9 +2488,11 @@ describe("popup.js", () => {
         });
       api.storage.local.get.mockResolvedValue({});
       await popup.refreshStoresAndQuery();
-      expect(api.storage.local.get).toHaveBeenCalledWith(
-        "store-for-host:switched.example",
-      );
+      // The popup now uses a single map under one storage key — the
+      // lookup is by storage key, not by per-host key. We assert the
+      // ONE storage key the recall path reads and let coerceHostStoreMap
+      // + the hostname lookup handle the rest.
+      expect(api.storage.local.get).toHaveBeenCalledWith(popup.HOST_STORE_KEY);
     });
   });
 
@@ -2295,9 +2606,9 @@ describe("popup.js", () => {
       });
       popup.elements.store.dispatchEvent(new Event("change"));
       await flushAsync();
-      expect(api.storage.local.set).toHaveBeenCalledWith({
-        "store-for-host:example.com": "b",
-      });
+      const setCall = api.storage.local.set.mock.calls.at(-1)[0];
+      expect(setCall).toHaveProperty(popup.HOST_STORE_KEY);
+      expect(setCall[popup.HOST_STORE_KEY]["example.com"]?.store).toBe("b");
       expect(api.runtime.sendMessage).toHaveBeenCalled();
     });
 
