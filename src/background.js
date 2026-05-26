@@ -38,10 +38,14 @@ const MAX_ARRAY_LEN = 10_000;
 const MAX_OBJECT_KEYS = 1024;
 const MAX_DEPTH = 6;
 
-/// Walks the host's reply enforcing the limits above. Throws on
-/// violation so `sendNativeRequest`'s `.catch` branch reports it as a
-/// transport error the popup can render. Cheaper than a JSON-schema
-/// validator and tight enough for our flat protocol.
+// Walks the host's reply enforcing the size/depth limits above —
+// purely structural, no per-action type knowledge. Throws on violation
+// so the caller can convert that into a transport-error reply.
+// Pairs with `validateResponseAgainstAction` below: this guard caps the
+// blast radius of a pathological payload (oversized arrays, deep
+// nesting); the per-action guard pins each field's type to the schema
+// the popup expects. Cheaper than a JSON-schema validator and tight
+// enough for our flat protocol.
 function validateResponseShape(value, depth) {
   if (depth > MAX_DEPTH) {
     throw new Error(`host response nests deeper than ${MAX_DEPTH} levels`);
@@ -77,6 +81,63 @@ function validateResponseShape(value, depth) {
     }
   }
   // Numbers, booleans, null, undefined: nothing to bound.
+}
+
+// Per-action validator table. Each entry takes the
+// already-shape-validated response and throws on a type that doesn't
+// match its action's contract. Lookup-by-action keeps the validator
+// closed over the schema of its own action rather than spreading
+// schema knowledge through a long if/else ladder, and gives us a
+// single place to add a new action's validator the day a new action
+// ships.
+const ACTION_VALIDATORS = {
+  [ACTION.ListStores](response) {
+    if (
+      response.protocol_version !== undefined &&
+      typeof response.protocol_version !== "number"
+    ) {
+      throw new Error("`protocol_version` is not a number");
+    }
+    if (response.stores !== undefined && !Array.isArray(response.stores)) {
+      throw new Error("`stores` is not an array");
+    }
+  },
+  [ACTION.Query](response) {
+    if (response.results !== undefined && !Array.isArray(response.results)) {
+      throw new Error("`results` is not an array");
+    }
+  },
+};
+
+// Enforces the per-action response schema at the IPC boundary so the
+// popup never has to defend against a host that returns the right
+// fields with the wrong types. An error-shaped reply
+// (`{error: "..."}`) is accepted regardless of action because the
+// host can reply with an error to any request and that path is
+// handled by the popup's `renderHostError`. Unknown action tokens
+// fall through unchecked — the dispatch surface above is the
+// trust boundary: every callsite uses `ACTION.Query` or
+// `ACTION.ListStores` literals, so an action without a registered
+// validator can only appear after a deliberate code change that
+// will surface in review. The popup keeps its own `Array.isArray`
+// guards as belt-and-braces; they're effectively unreachable when
+// this validator runs, but they protect against a future code path
+// that ever reaches the popup without going through here.
+function validateResponseAgainstAction(actionToken, response) {
+  if (!response || typeof response !== "object") {
+    throw new Error("host reply is not an object");
+  }
+  if (typeof response.error === "string") {
+    // Error envelopes have their own contract; the popup's
+    // `renderHostError` reads `error` and `hint`. No further field
+    // checks here — let the popup tolerate (or ignore) any extra
+    // fields the host attached.
+    return;
+  }
+  const validator = ACTION_VALIDATORS[actionToken];
+  if (validator) {
+    validator(response);
+  }
 }
 
 // One-shot native request that connects, sends, awaits a single reply
@@ -132,7 +193,21 @@ function sendNativeRequest(request) {
       try {
         validateResponseShape(message, 0);
       } catch (err) {
+        // Shape violation (oversized strings/arrays, deep nesting):
+        // the reply is pathological enough that we'd rather report
+        // it as a transport error than try to render the contents.
         settle(reject, err);
+        return;
+      }
+      try {
+        validateResponseAgainstAction(request.action, message);
+      } catch (err) {
+        // The reply is well-sized but the field types are wrong for
+        // the action that was sent. Synthesize a host-error envelope
+        // so the popup renders the user-friendly decode-error copy
+        // it already shows for host-reported decode failures, rather
+        // than the transport-error fallback.
+        settle(resolve, { error: "decode_error", hint: err.message });
         return;
       }
       settle(resolve, message);
@@ -257,6 +332,21 @@ function sendNativeBatch(requests) {
         return;
       }
       const { request_id: _omit, ...payload } = message;
+      try {
+        validateResponseAgainstAction(requests[requestId - 1].action, payload);
+      } catch (err) {
+        // Per-slot decode failure: synthesize the same host-error
+        // envelope `sendNativeRequest` does, but scoped to just this
+        // request. The rest of the batch is unaffected — a misbehaving
+        // store doesn't poison its siblings, and the popup renders
+        // the decode-error copy for the affected slot the same way it
+        // would for a host-reported decode failure.
+        finalize(requestId - 1, {
+          error: "decode_error",
+          hint: err.message,
+        });
+        return;
+      }
       finalize(requestId - 1, payload);
     });
     port.onDisconnect.addListener(() => {

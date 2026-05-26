@@ -114,6 +114,199 @@ describe("background.js", () => {
     });
   });
 
+  describe("validateResponseAgainstAction (item D — type guards at the IPC boundary)", () => {
+    // Both `sendNativeRequest` (single) and `sendNativeBatch` (multi)
+    // route every host reply through the per-action type validator
+    // AFTER the shape limits clear. A type mismatch surfaces to the
+    // popup as a synthesized `{error: "decode_error", hint: ...}`
+    // envelope rather than the transport-error category that
+    // shape failures use — same as the popup's existing
+    // Array.isArray guards, but enforced at the IPC boundary so the
+    // single source of truth lives in the background.
+
+    async function exchangeListStores(payload) {
+      const resultPromise = invokeBackgroundListener(api, {
+        type: "list_stores",
+      });
+      const port = lastConnectedPort(api);
+      port.__emitMessage(payload);
+      return resultPromise;
+    }
+
+    async function exchangeQuery(payload) {
+      const resultPromise = invokeBackgroundListener(api, {
+        type: "query",
+        domain: "example.com",
+      });
+      const port = lastConnectedPort(api);
+      port.__emitMessage(payload);
+      return resultPromise;
+    }
+
+    it("accepts a list_stores reply whose `stores` is an array", async () => {
+      const reply = await exchangeListStores({
+        protocol_version: 1,
+        stores: [{ name: "a", default: true }],
+      });
+      expect(reply.ok).toBe(true);
+      expect(reply.response.stores[0].name).toBe("a");
+    });
+
+    it("synthesises decode_error when list_stores returns `stores` as a non-array", async () => {
+      const reply = await exchangeListStores({
+        protocol_version: 1,
+        stores: "broken",
+      });
+      expect(reply.ok).toBe(true);
+      expect(reply.response).toEqual({
+        error: "decode_error",
+        hint: "`stores` is not an array",
+      });
+    });
+
+    it("synthesises decode_error when list_stores returns `protocol_version` as a non-number", async () => {
+      const reply = await exchangeListStores({
+        protocol_version: "one",
+        stores: [],
+      });
+      expect(reply.ok).toBe(true);
+      expect(reply.response).toEqual({
+        error: "decode_error",
+        hint: "`protocol_version` is not a number",
+      });
+    });
+
+    it("accepts a list_stores reply that omits stores entirely (optional field)", async () => {
+      const reply = await exchangeListStores({ protocol_version: 1 });
+      expect(reply.ok).toBe(true);
+      expect(reply.response).toEqual({ protocol_version: 1 });
+    });
+
+    it("accepts a list_stores reply that omits protocol_version (popup catches that case)", async () => {
+      // The host SHOULD always send protocol_version on list_stores
+      // replies — but the absence is a different failure mode than a
+      // wrong type, and the popup's `isCompatibleProtocol` already
+      // surfaces it as a clear "unknown protocol" message. The
+      // type guard only fires when the field is present-but-wrong.
+      const reply = await exchangeListStores({ stores: [] });
+      expect(reply.ok).toBe(true);
+      expect(reply.response).toEqual({ stores: [] });
+    });
+
+    it("accepts a query reply whose `results` is an array", async () => {
+      const reply = await exchangeQuery({ results: [{ name: "alice" }] });
+      expect(reply.ok).toBe(true);
+      expect(reply.response.results[0].name).toBe("alice");
+    });
+
+    it("synthesises decode_error when query returns `results` as a non-array", async () => {
+      const reply = await exchangeQuery({ results: "broken" });
+      expect(reply.ok).toBe(true);
+      expect(reply.response).toEqual({
+        error: "decode_error",
+        hint: "`results` is not an array",
+      });
+    });
+
+    it("accepts a query reply that omits results entirely (popup defaults to [])", async () => {
+      const reply = await exchangeQuery({});
+      expect(reply.ok).toBe(true);
+      expect(reply.response).toEqual({});
+    });
+
+    it("passes a host-error reply through any action without type checks", async () => {
+      // The error envelope (`{error, hint}`) is the host's universal
+      // failure shape; the validator must let it through regardless of
+      // which action was sent so the popup's `renderHostError` can
+      // render the host's preferred error copy.
+      const errorReply = {
+        error: "identity_locked",
+        hint: "touch your YubiKey",
+      };
+      const listReply = await exchangeListStores(errorReply);
+      expect(listReply.ok).toBe(true);
+      expect(listReply.response).toEqual(errorReply);
+      const queryReply = await exchangeQuery(errorReply);
+      expect(queryReply.ok).toBe(true);
+      expect(queryReply.response).toEqual(errorReply);
+    });
+
+    it("synthesises decode_error when the reply is not an object (top-level scalar)", async () => {
+      // Shape validation accepts a bare string (no recursion into it
+      // beyond the length check); the type guard catches the
+      // "not an object" gap because every action's contract assumes
+      // an object reply with named fields.
+      const reply = await exchangeListStores("not-an-object");
+      expect(reply.ok).toBe(true);
+      expect(reply.response).toEqual({
+        error: "decode_error",
+        hint: "host reply is not an object",
+      });
+    });
+
+    it("synthesises decode_error when the reply is null (shape walk treats null as terminal)", async () => {
+      const reply = await exchangeListStores(null);
+      // Background's `sendBackground`-equivalent doesn't unwrap null
+      // host responses — the listener has its own response-shape
+      // guard. Verify the validator catches it cleanly rather than
+      // letting it propagate as a TypeError.
+      expect(reply.ok).toBe(true);
+      expect(reply.response).toEqual({
+        error: "decode_error",
+        hint: "host reply is not an object",
+      });
+    });
+
+    it("query_multi: a slot whose reply has the wrong `results` type becomes decode_error WITHOUT poisoning siblings", async () => {
+      // This is the load-bearing batch test: in a multi-store query,
+      // one store returning garbage must not skip every other store.
+      // The host's worker-thread parallelism already isolates failures
+      // at the decrypt step; this guard pins the same isolation at
+      // the type-validation step.
+      const replyPromise = invokeBackgroundListener(api, {
+        type: "query_multi",
+        requests: [
+          { domain: "a.test", store: "a" },
+          { domain: "b.test", store: "b" },
+        ],
+      });
+      const port = lastConnectedPort(api);
+      port.__emitMessage({ request_id: 1, results: [{ name: "good" }] });
+      port.__emitMessage({ request_id: 2, results: "broken" });
+      const reply = await replyPromise;
+      expect(reply.ok).toBe(true);
+      expect(reply.responses[0].results[0].name).toBe("good");
+      expect(reply.responses[1]).toEqual({
+        error: "decode_error",
+        hint: "`results` is not an array",
+      });
+    });
+
+    it("query_multi: a host-error envelope on one slot still passes through (action-typed validator lets error shapes through)", async () => {
+      const replyPromise = invokeBackgroundListener(api, {
+        type: "query_multi",
+        requests: [
+          { domain: "a.test", store: "a" },
+          { domain: "b.test", store: "b" },
+        ],
+      });
+      const port = lastConnectedPort(api);
+      port.__emitMessage({ request_id: 1, results: [{ name: "good" }] });
+      port.__emitMessage({
+        request_id: 2,
+        error: "identity_locked",
+        hint: "touch your key",
+      });
+      const reply = await replyPromise;
+      expect(reply.responses[0].results[0].name).toBe("good");
+      expect(reply.responses[1]).toEqual({
+        error: "identity_locked",
+        hint: "touch your key",
+      });
+    });
+
+  });
+
   describe("native message dispatch", () => {
     it("translates a `query` message into the correct host request", async () => {
       const replyPromise = invokeBackgroundListener(api, {
