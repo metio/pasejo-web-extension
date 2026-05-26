@@ -12,7 +12,16 @@ SPDX-License-Identifier: 0BSD
   <body>
     <header class="header">
       <span class="title">pasejo</span>
-      <span id="domain" class="domain" aria-live="polite"></span>
+      <!--
+        No aria-live: the popup is a fresh document per open and the
+        domain is written exactly once during `main()` before any AT
+        traversal can reach the live-region machinery. Marking this
+        span as a live region would promise dynamic updates that
+        never happen and tax the screen reader's tracking for
+        nothing. The status section below DOES need `aria-live`
+        because `setStatus` mutates it after first paint.
+      -->
+      <span id="domain" class="domain"></span>
     </header>
 
     <section class="controls">

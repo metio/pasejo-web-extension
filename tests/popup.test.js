@@ -168,6 +168,28 @@ describe("popup.js", () => {
     document.body.innerHTML = "";
   });
 
+  describe("popup chrome / accessibility (item E)", () => {
+    it("does not mark #domain as a live region — the value is written once during main() and AT picks it up from the initial paint", async () => {
+      const { popup } = await setUp();
+      // The element is in the DOM and reachable through the
+      // popup's element lookup table.
+      expect(popup.elements.domain).not.toBeNull();
+      // The status section below is the only intentionally-live
+      // region in the popup chrome. Marking #domain as `aria-live`
+      // promises updates that never happen and adds noise to the
+      // screen reader's tracking. A future contributor reflexively
+      // adding `aria-live` back would trip this assertion.
+      expect(popup.elements.domain.hasAttribute("aria-live")).toBe(false);
+    });
+
+    it("keeps #status as a polite live region (positive control: setStatus mutates it after first paint)", async () => {
+      const { popup } = await setUp();
+      // setStatus writes both role and aria-live explicitly on each
+      // call; the initial HTML attribute survives until then.
+      expect(popup.elements.status.getAttribute("aria-live")).toBe("polite");
+    });
+  });
+
   describe("activeHostname (item K — IPv6 unbracketing)", () => {
     it("returns the bare hostname for normal HTTPS URLs", async () => {
       const { popup } = await setUp();

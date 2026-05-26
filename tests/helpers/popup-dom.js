@@ -9,7 +9,7 @@ export function buildPopupDom(document) {
   document.body.innerHTML = `
     <header class="header">
       <span class="title">pasejo</span>
-      <span id="domain" class="domain" aria-live="polite"></span>
+      <span id="domain" class="domain"></span>
     </header>
     <section class="controls">
       <label for="store">Store</label>
