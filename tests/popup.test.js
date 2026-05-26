@@ -29,6 +29,7 @@ const EXPOSED = [
   "renderStores",
   "readSelectedStore",
   "pickPreferredStore",
+  "isPickStillValid",
   "rememberStoreForHost",
   "recallStoreForHost",
   "coerceHostStoreMap",
@@ -635,6 +636,51 @@ describe("popup.js", () => {
         popup.ALL_STORES,
       );
       expect(popup.readSelectedStore()).toBe(popup.ALL_STORES);
+    });
+  });
+
+  describe("isPickStillValid (pure helper, item K)", () => {
+    it("rejects an empty pick", async () => {
+      const { popup } = await setUp();
+      expect(popup.isPickStillValid(null, [])).toBe(false);
+      expect(popup.isPickStillValid(undefined, [])).toBe(false);
+      expect(popup.isPickStillValid("", [])).toBe(false);
+    });
+
+    it("accepts ALL_STORES when more than one store exists", async () => {
+      const { popup } = await setUp();
+      expect(
+        popup.isPickStillValid(popup.ALL_STORES, [
+          { name: "a" },
+          { name: "b" },
+        ]),
+      ).toBe(true);
+    });
+
+    it("rejects ALL_STORES when only one store exists", async () => {
+      const { popup } = await setUp();
+      expect(popup.isPickStillValid(popup.ALL_STORES, [{ name: "a" }])).toBe(
+        false,
+      );
+    });
+
+    it("accepts a store name that exists in the list", async () => {
+      const { popup } = await setUp();
+      expect(
+        popup.isPickStillValid("b", [{ name: "a" }, { name: "b" }]),
+      ).toBe(true);
+    });
+
+    it("rejects a store name that does not exist in the list", async () => {
+      const { popup } = await setUp();
+      expect(popup.isPickStillValid("c", [{ name: "a" }, { name: "b" }])).toBe(
+        false,
+      );
+    });
+
+    it("rejects against an empty store list", async () => {
+      const { popup } = await setUp();
+      expect(popup.isPickStillValid("a", [])).toBe(false);
     });
   });
 
@@ -2881,6 +2927,128 @@ describe("popup.js", () => {
       // ONE storage key the recall path reads and let coerceHostStoreMap
       // + the hostname lookup handle the rest.
       expect(api.storage.local.get).toHaveBeenCalledWith(popup.HOST_STORE_KEY);
+    });
+
+    it("respects an intermediate dropdown change that lands while loadStores is in flight (item K)", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = "a";
+      // chrome.storage holds the OLD pick — modelling the race where
+      // the change handler's `rememberStoreForHost` hasn't yet
+      // propagated by the time the refresh's `pickPreferredStore`
+      // would read it.
+      api.storage.local.get.mockResolvedValue({
+        [popup.HOST_STORE_KEY]: {
+          "example.com": { store: "a", lastUsedAt: 100 },
+        },
+      });
+      const loadStoresDeferred = deferred();
+      api.runtime.sendMessage
+        // list_stores reply is gated until the test resolves it.
+        .mockReturnValueOnce(loadStoresDeferred.promise)
+        // Query that the post-refresh `runQuery` issues.
+        .mockResolvedValue({ ok: true, response: { results: [] } });
+
+      const refreshDone = popup.refreshStoresAndQuery();
+      // Simulate the user clicking the dropdown mid-refresh: the
+      // production change handler writes the new pick synchronously
+      // to `state.store` before any await.
+      popup.state.store = "b";
+
+      loadStoresDeferred.resolve({
+        ok: true,
+        response: {
+          protocol_version: 1,
+          stores: [
+            { name: "a", default: true },
+            { name: "b", default: false },
+          ],
+        },
+      });
+      await refreshDone;
+
+      // The user's intermediate pick survives — both in state and in
+      // the dropdown DOM, and the post-refresh query carries the
+      // user's choice rather than the previously remembered one.
+      expect(popup.state.store).toBe("b");
+      const optionB = Array.from(popup.elements.store.options).find(
+        (o) => o.value === "b",
+      );
+      expect(optionB.selected).toBe(true);
+      const lastSent = api.runtime.sendMessage.mock.calls.at(-1)[0];
+      expect(lastSent).toEqual({
+        type: "query",
+        domain: "example.com",
+        store: "b",
+      });
+    });
+
+    it("falls back to the remembered preference when the user did NOT change the dropdown during refresh (positive control for item K)", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = "a";
+      api.storage.local.get.mockResolvedValue({
+        [popup.HOST_STORE_KEY]: {
+          "example.com": { store: "work", lastUsedAt: 100 },
+        },
+      });
+      api.runtime.sendMessage
+        .mockResolvedValueOnce({
+          ok: true,
+          response: {
+            protocol_version: 1,
+            stores: [
+              { name: "personal", default: true },
+              { name: "work", default: false },
+            ],
+          },
+        })
+        .mockResolvedValue({ ok: true, response: { results: [] } });
+
+      await popup.refreshStoresAndQuery();
+
+      // The user didn't touch the dropdown, so the remembered "work"
+      // wins (rather than `state.store`'s "a" — which was a stale
+      // snapshot from before the refresh).
+      expect(popup.state.store).toBe("work");
+    });
+
+    it("falls back to the remembered preference when the user's intermediate pick names a store that has since been removed (item K, defensive)", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = "a";
+      api.storage.local.get.mockResolvedValue({
+        [popup.HOST_STORE_KEY]: {
+          "example.com": { store: "a", lastUsedAt: 100 },
+        },
+      });
+      const loadStoresDeferred = deferred();
+      api.runtime.sendMessage
+        .mockReturnValueOnce(loadStoresDeferred.promise)
+        .mockResolvedValue({ ok: true, response: { results: [] } });
+
+      const refreshDone = popup.refreshStoresAndQuery();
+      // User picks a store that the refreshed roster has since
+      // dropped (e.g. they had it open in a stale popup while
+      // someone re-keyed the config).
+      popup.state.store = "ghost-store";
+
+      loadStoresDeferred.resolve({
+        ok: true,
+        response: {
+          protocol_version: 1,
+          stores: [
+            { name: "a", default: true },
+            { name: "b", default: false },
+          ],
+        },
+      });
+      await refreshDone;
+
+      // "ghost-store" isn't in the refreshed list, so the refresh
+      // falls back through `pickPreferredStore` and lands on the
+      // remembered "a".
+      expect(popup.state.store).toBe("a");
     });
   });
 

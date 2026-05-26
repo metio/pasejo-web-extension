@@ -242,18 +242,26 @@ function readSelectedStore() {
   return elements.store.value || null;
 }
 
+// Pure helper: tests whether `pick` names something the just-loaded
+// `stores` list can still select. `ALL_STORES` is valid when more
+// than one real store exists (the sentinel option only renders in
+// that case). Any other name is valid when an entry in `stores`
+// carries it. Used by both `pickPreferredStore` (validating a value
+// read from chrome.storage) and `refreshStoresAndQuery` (validating
+// the user's intermediate dropdown pick during a refresh).
+function isPickStillValid(pick, stores) {
+  if (!pick) {
+    return false;
+  }
+  if (pick === ALL_STORES) {
+    return stores.length > 1;
+  }
+  return stores.some((s) => s.name === pick);
+}
+
 async function pickPreferredStore(stores, hostname) {
   const remembered = await recallStoreForHost(hostname);
-  if (!remembered) {
-    return null;
-  }
-  if (remembered === ALL_STORES) {
-    // The "All stores" entry only renders when more than one store
-    // exists; falling back to null lets `renderStores` use the
-    // config-default selection in the single-store case.
-    return stores.length > 1 ? ALL_STORES : null;
-  }
-  return stores.some((s) => s.name === remembered) ? remembered : null;
+  return isPickStillValid(remembered, stores) ? remembered : null;
 }
 
 // Per-host store memory. The popup remembers which store the user last
@@ -939,11 +947,31 @@ async function listFrames(tabId) {
 // because `main` has already populated it from the active tab before
 // the first call; the Refresh handler reuses the same field.
 async function refreshStoresAndQuery() {
+  // Snapshot the user's pick so we can detect an intermediate change
+  // (dropdown click) that lands while `loadStores` is in flight. The
+  // change handler writes the new pick to `state.store` synchronously
+  // but the matching chrome.storage write is async and may not have
+  // propagated by the time `pickPreferredStore` reads it back. Without
+  // this guard, a refresh that started before the dropdown click
+  // would overwrite the user's just-chosen store with the previously
+  // remembered one.
+  const initialStore = state.store;
   const stores = await loadStores();
   if (stores === null) {
     return;
   }
-  const preferred = await pickPreferredStore(stores, state.domain);
+  // The user's intermediate pick wins over the remembered preference
+  // when it's still a valid choice in the refreshed roster. If they
+  // picked a store that has since been removed (or `ALL_STORES` when
+  // only one store now exists) we fall through to the normal
+  // remembered-preference path so the dropdown lands somewhere
+  // selectable.
+  const userIntermediatePick =
+    state.store !== initialStore && isPickStillValid(state.store, stores)
+      ? state.store
+      : null;
+  const preferred =
+    userIntermediatePick ?? (await pickPreferredStore(stores, state.domain));
   state.stores = stores;
   renderStores(stores, preferred);
   state.store = readSelectedStore();
