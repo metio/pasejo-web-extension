@@ -81,6 +81,28 @@ function stubRect(el, rect = {}) {
   return el;
 }
 
+// happy-dom validates CSS colours strictly: it rejects keywords real
+// modern browsers accept, including the `AccentColor` system colour
+// the content script's pulse uses. Tests that need to verify the
+// during-pulse outline value have to bypass that validation by
+// replacing `outlineColor` with a permissive getter/setter pair on
+// the specific input. The stub is per-element, not global, so the
+// rest of the test suite still exercises happy-dom's real CSS
+// validation on every other element.
+function relaxOutlineColor(el) {
+  let value = el.style.outlineColor;
+  Object.defineProperty(el.style, "outlineColor", {
+    configurable: true,
+    get() {
+      return value;
+    },
+    set(v) {
+      value = v;
+    },
+  });
+  return el;
+}
+
 // Attach an open (default) or closed shadow root to a fresh host
 // inserted into document.body, and place an input of the given type
 // inside it. Returns the host, shadow root, and the input itself so
@@ -641,7 +663,7 @@ describe("fill.js content script", () => {
   });
 
   describe("pulse", () => {
-    it("applies the brand outline immediately and restores the original on the 600 ms timer", async () => {
+    it("applies the AccentColor outline immediately and restores the original on the 600 ms timer", async () => {
       vi.useFakeTimers();
       const password = makeVisibleInput("password");
       // Pre-existing outline set by the page as a shorthand — every
@@ -649,12 +671,16 @@ describe("fill.js content script", () => {
       // recoverable after the pulse.
       password.style.outline = "1px dotted red";
       password.style.outlineOffset = "4px";
+      // happy-dom rejects the `AccentColor` keyword the pulse uses;
+      // relax the input's outlineColor setter so the during-pulse
+      // assertion can observe what real browsers would write.
+      relaxOutlineColor(password);
       await callListener(api, {
         type: "fill",
         password: "hunter2",
       });
-      // During the pulse: brand colour + 2 px width + zero offset.
-      expect(password.style.outlineColor).toBe("#3a4ba0");
+      // During the pulse: AccentColor + 2 px width + zero offset.
+      expect(password.style.outlineColor).toBe("AccentColor");
       expect(password.style.outlineWidth).toBe("2px");
       expect(password.style.outlineStyle).toBe("solid");
       expect(password.style.outlineOffset).toBe("0");
@@ -691,11 +717,12 @@ describe("fill.js content script", () => {
       vi.useFakeTimers();
       const password = makeVisibleInput("password");
       password.style.outlineColor = "purple";
+      relaxOutlineColor(password);
       await callListener(api, {
         type: "fill",
         password: "hunter2",
       });
-      expect(password.style.outlineColor).toBe("#3a4ba0");
+      expect(password.style.outlineColor).toBe("AccentColor");
       vi.advanceTimersByTime(600);
       expect(password.style.outlineColor).toBe("purple");
       expect(password.style.outlineWidth).toBe("");
@@ -748,6 +775,7 @@ describe("fill.js content script", () => {
       expect(password.style.outlineColor).toBe("");
       expect(password.style.outlineOffset).toBe("");
     });
+
   });
 
   describe("shadow DOM (item M)", () => {

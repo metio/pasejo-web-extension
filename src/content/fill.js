@@ -7,6 +7,14 @@
     return;
   }
 
+  // Pulse outline colour — the user's OS / browser system accent.
+  // Targeting Firefox 103+ / Chromium 118+ for the `AccentColor`
+  // keyword; both engines are years past those versions, so no
+  // feature detection or fallback is needed. The pulse picks up the
+  // theme the user has already chosen rather than imposing a brand
+  // colour on every page.
+  const PULSE_OUTLINE_COLOR = "AccentColor";
+
   // The pickers below are intentionally conservative: nothing fires
   // until the popup explicitly sends `{type: "fill"}`. The page never
   // sees credentials on load and never sees them in response to focus or
@@ -286,7 +294,7 @@
     const previousOffset = el.style.outlineOffset;
     el.style.outlineWidth = "2px";
     el.style.outlineStyle = "solid";
-    el.style.outlineColor = "#3a4ba0";
+    el.style.outlineColor = PULSE_OUTLINE_COLOR;
     el.style.outlineOffset = "0";
     setTimeout(() => {
       el.style.outlineWidth = previousWidth;
