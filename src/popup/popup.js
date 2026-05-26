@@ -49,11 +49,15 @@ const state = {
 
 // Status messages above this many characters get visibly truncated
 // with an ellipsis; the full text moves to the element's `title` so
-// hover / long-press still reveals it. 160 is roughly the number of
-// 13 px-monospace glyphs that fit in two and a half lines of the
-// 340-420 px popup; anything longer used to push the results list
-// down. The CSS `-webkit-line-clamp` is a second, layout-side cap
-// that protects against unexpected wrapping inside the budget.
+// hover / long-press still reveals it. 160 is an empirical budget
+// for the 13 px `system-ui` font running in a 340–420 px popup —
+// roughly two and a half lines of average-width characters before
+// the status section starts pushing the results list down. CSS
+// `system-ui` resolves to whatever proportional font the OS hands
+// the browser, so the average character width varies a bit per
+// platform; the CSS `-webkit-line-clamp` rule in popup.css is the
+// layout-side cap that catches the edge case where an unusually
+// wide character mix slips past this code-point count.
 const MAX_STATUS_CHARS = 160;
 
 // Pure helper: returns `{ text, title }` for a raw status string.

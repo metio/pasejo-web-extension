@@ -221,13 +221,49 @@
     return (visibleH * visibleW) / elementArea;
   }
 
+  // Substring hints we scan in `id` / `name` / `placeholder` /
+  // `autocomplete` / `aria-label` of candidate inputs. English forms
+  // cover the bulk of sites because developer-facing attribute names
+  // stay in English even on heavily-localised products; the
+  // additional European-language entries below catch user-facing
+  // `placeholder` and `aria-label` text on sites that localise those
+  // surfaces. The list is intentionally European-Latin only —
+  // matching is substring-includes against a lowercased haystack, so
+  // adding CJK characters here would require Unicode-safe casing and
+  // wider false-positive review for marginal coverage gains (most
+  // CJK sites still use English-derived attribute names).
   const USERNAME_HINTS = [
+    // English
     "user",
     "username",
     "login",
     "email",
     "account",
     "ident",
+    // German — covers placeholder text like "Benutzername", "Konto",
+    // "Anmelden".
+    "benutzer",
+    "konto",
+    "anmeld",
+    // French — covers "utilisateur", "connexion", "compte",
+    // "courriel". The single substring "ateur" would also match
+    // "utilisateur" but risks over-matching on shorter strings.
+    "utilisateur",
+    "connexion",
+    "compte",
+    "courriel",
+    // Spanish — covers "usuario", "cuenta", "correo", "ingreso".
+    "usuario",
+    "cuenta",
+    "correo",
+    "ingreso",
+    // Italian — covers "utente", "accesso" (also matches "access" in
+    // English, intentionally).
+    "utente",
+    "accesso",
+    // Portuguese — covers "usuário" and "acessar". `usuario` from
+    // Spanish also matches the unaccented form.
+    "acessar",
   ];
 
   const USERNAME_TYPES = new Set(["text", "email", "tel", "url", ""]);

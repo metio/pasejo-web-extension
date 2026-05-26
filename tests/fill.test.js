@@ -501,6 +501,43 @@ describe("fill.js content script", () => {
       }
     });
 
+    it("accepts inputs whose haystack only carries a non-English-language hint (item W)", async () => {
+      // Covers the localised-placeholder / aria-label case: sites
+      // that leave attribute NAMES in English but localise the
+      // user-facing strings. Each row is one site we'd otherwise
+      // miss before the multi-lingual hints landed.
+      const cases = [
+        { placeholder: "Benutzername" }, // German "username"
+        { placeholder: "Konto" }, // German "account"
+        { placeholder: "Anmelden" }, // German "log in"
+        { placeholder: "Utilisateur" }, // French "user"
+        { placeholder: "Connexion" }, // French "log in"
+        { placeholder: "Compte" }, // French "account"
+        { placeholder: "Courriel" }, // French "email"
+        { placeholder: "Usuario" }, // Spanish "user"
+        { placeholder: "Cuenta" }, // Spanish "account"
+        { placeholder: "Correo" }, // Spanish "email"
+        { placeholder: "Ingreso" }, // Spanish "log in"
+        { placeholder: "Utente" }, // Italian "user"
+        { placeholder: "Accesso" }, // Italian "access / log in"
+        { placeholder: "Acessar" }, // Portuguese "to access"
+      ];
+      for (const props of cases) {
+        document.body.innerHTML = "";
+        const username = makeVisibleInput("text", { props });
+        const password = makeVisibleInput("password");
+        await callListener(api, {
+          type: "fill",
+          username: "x",
+          password: "y",
+        });
+        expect(username.value).toBe(
+          "x",
+          `expected hint ${JSON.stringify(props)} to be detected`,
+        );
+      }
+    });
+
     it("rejects username-shaped types like number/checkbox/etc", async () => {
       document.body.innerHTML = "<form id='f'></form>";
       const form = document.getElementById("f");
