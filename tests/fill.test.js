@@ -942,6 +942,90 @@ describe("fill.js content script", () => {
     });
   });
 
+  describe("single-walk gather (item Q)", () => {
+    // The refactor's load-bearing invariant: every fill path now
+    // walks the DOM once via `queryAllDeep(document, "input")` and
+    // filters the resulting pool for password / username candidates
+    // in JS, rather than re-walking for each of the two roles. Spy
+    // on the top-level `document.querySelectorAll` to lock the new
+    // shape in place — a regression that re-introduced a separate
+    // `input[type="password"]` walk would show up as TWO selector-
+    // matching calls.
+
+    // happy-dom issues its own internal `querySelectorAll` calls
+    // for style resolution (e.g. `"style,link[rel=stylesheet]"`)
+    // during visibility checks. Filter the spy to the input-related
+    // selectors only — those are the ones the fill path's deep walk
+    // would issue.
+    const inputSelectorCalls = (querySpy) =>
+      querySpy.mock.calls
+        .map((args) => args[0])
+        .filter((s) => typeof s === "string" && s.includes("input"));
+
+    it("a form-less password fill issues a single `input` selector lookup on document, not separate password+input walks", async () => {
+      const querySpy = vi.spyOn(document, "querySelectorAll");
+      // No <form> around the inputs: this is the path that used to
+      // walk the DOM twice (once for password, once for any input).
+      const username = makeVisibleInput("text", { props: { name: "user" } });
+      const password = makeVisibleInput("password");
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(true);
+      // Exactly one selector-based traversal on the document, and
+      // it asks for ALL `input` elements (not the narrow
+      // `input[type="password"]` the previous structure used).
+      expect(inputSelectorCalls(querySpy)).toEqual(["input"]);
+      // Sanity: the fill still hit the right elements.
+      expect(username.value).toBe("alice");
+      expect(password.value).toBe("hunter2");
+    });
+
+    it("a standalone-username fill (no password input on page) also issues only the single `input` lookup", async () => {
+      const querySpy = vi.spyOn(document, "querySelectorAll");
+      const email = makeVisibleInput("email", { props: { name: "email" } });
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice@example.com",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(true);
+      expect(reply.filled).toEqual({ username: true, password: false });
+      // Same single-walk property: no second deep walk for the
+      // standalone-username search.
+      expect(inputSelectorCalls(querySpy)).toEqual(["input"]);
+      expect(email.value).toBe("alice@example.com");
+    });
+
+    it("descends into shadow hosts via TreeWalker (no per-element `*` enumeration at the JS layer)", async () => {
+      // The internal change: instead of `root.querySelectorAll("*")`
+      // (which forces JS to iterate every element just to check
+      // `.shadowRoot`), the walk uses `createTreeWalker` with a
+      // shadow-host filter — the engine visits every element under
+      // the hood but only surfaces shadow hosts to JS. Spy on the
+      // document's `createTreeWalker` to lock this in.
+      const walkerSpy = vi.spyOn(document, "createTreeWalker");
+      attachShadowInput("password");
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(reply.ok).toBe(true);
+      expect(walkerSpy).toHaveBeenCalled();
+      const [, whatToShow, filter] = walkerSpy.mock.calls[0];
+      expect(whatToShow).toBe(NodeFilter.SHOW_ELEMENT);
+      // A non-shadow-host element is skipped.
+      const plainEl = document.createElement("div");
+      expect(filter.acceptNode(plainEl)).toBe(NodeFilter.FILTER_SKIP);
+      // A shadow host is accepted.
+      const host = document.createElement("div");
+      host.attachShadow({ mode: "open" });
+      expect(filter.acceptNode(host)).toBe(NodeFilter.FILTER_ACCEPT);
+    });
+  });
+
   describe("fallback paths inside the listener", () => {
     it("the listener catches errors thrown by fill and replies with ok:false", async () => {
       // No password input AND no username arg → fill() throws.

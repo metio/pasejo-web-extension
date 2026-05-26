@@ -42,7 +42,14 @@
   });
 
   function fill(username, password) {
-    const passwordInput = findPasswordInput();
+    // Single deep traversal: collect every `<input>` reachable from
+    // the document, including across open shadow boundaries. The
+    // find* helpers below filter this pool by type / role rather
+    // than walking the DOM a second time. Two traversal-deep walks
+    // used to fire per fill in the form-less and standalone-username
+    // paths; one is enough.
+    const allInputs = queryAllDeep(document, "input");
+    const passwordInput = findPasswordInput(allInputs);
     if (!passwordInput) {
       // Multi-step login pages (email page → password page) have no
       // password input on the email step. Fall back to a username-only
@@ -50,7 +57,7 @@
       // and report `password: false` so the popup can tell them to
       // reopen on the next page for the password fill.
       if (username) {
-        const usernameInput = findStandaloneUsernameInput();
+        const usernameInput = findStandaloneUsernameInput(allInputs);
         if (usernameInput) {
           assignInput(usernameInput, username);
           return {
@@ -60,7 +67,7 @@
       }
       throw new Error("No password input found on this page");
     }
-    const usernameInput = findUsernameInputFor(passwordInput);
+    const usernameInput = findUsernameInputFor(passwordInput, allInputs);
 
     if (usernameInput && username) {
       assignInput(usernameInput, username);
@@ -76,11 +83,10 @@
     };
   }
 
-  function findPasswordInput() {
-    const candidates = queryAllDeep(
-      document,
-      'input[type="password"]',
-    ).filter(isInteractable);
+  function findPasswordInput(allInputs) {
+    const candidates = allInputs.filter(
+      (el) => el.type === "password" && isInteractable(el),
+    );
     if (candidates.length === 0) {
       return null;
     }
@@ -97,18 +103,19 @@
 
   // Look for a username field that shares the password's form. Fall back
   // to the previous visible input that looks like a username.
-  function findUsernameInputFor(passwordInput) {
+  function findUsernameInputFor(passwordInput, allInputs) {
     const form = passwordInput.form;
     // `form.elements` only sees regular form-associated inputs, not
     // those buried in a shadow root inside the form. For the form
     // case we accept that limitation (custom elements that own their
     // own form-associated inputs are rare); for the form-less case
     // (the common shadow-DOM scenario — the input has no `.form`
-    // because the host is in a shadow tree) we walk every shadow
-    // root reachable from the document.
+    // because the host is in a shadow tree) we reuse the
+    // already-collected `allInputs` pool rather than re-walking the
+    // tree.
     const pool = form
       ? Array.from(form.elements).filter((el) => el instanceof HTMLInputElement)
-      : queryAllDeep(document, "input");
+      : allInputs;
     const candidates = pool.filter(
       (el) => el !== passwordInput && isInteractable(el) && looksLikeUsername(el),
     );
@@ -136,8 +143,8 @@
   // Standalone username search for pages with no password input (the
   // first step of a multi-step login). Same focused → viewport-visible
   // → first-in-document ranking as the password search.
-  function findStandaloneUsernameInput() {
-    const candidates = queryAllDeep(document, "input").filter(
+  function findStandaloneUsernameInput(allInputs) {
+    const candidates = allInputs.filter(
       (el) => isInteractable(el) && looksLikeUsername(el),
     );
     if (candidates.length === 0) {
@@ -156,12 +163,27 @@
   // by outside JS — including content scripts running in their isolated
   // world — and are silently skipped; a site that hides its login form
   // inside a closed shadow root effectively opts out of autofill.
+  //
+  // The walk uses a `TreeWalker` filtered to shadow-host elements
+  // rather than `root.querySelectorAll("*")`. Both approaches visit
+  // every element under the hood, but the filter runs in C++ and the
+  // JS-visible iteration is over shadow hosts only (typically a
+  // handful), where the NodeList approach forced JS to iterate every
+  // element in the tree just to dereference `.shadowRoot`. For a
+  // Lit / Stencil / LWC app with thousands of components, that's the
+  // difference between low milliseconds and microseconds per fill.
   function queryAllDeep(root, selector) {
     const matches = Array.from(root.querySelectorAll(selector));
-    for (const el of root.querySelectorAll("*")) {
-      if (el.shadowRoot) {
-        matches.push(...queryAllDeep(el.shadowRoot, selector));
-      }
+    const ownerDoc = root.ownerDocument ?? document;
+    const walker = ownerDoc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+      acceptNode(node) {
+        return node.shadowRoot
+          ? NodeFilter.FILTER_ACCEPT
+          : NodeFilter.FILTER_SKIP;
+      },
+    });
+    for (let host = walker.nextNode(); host; host = walker.nextNode()) {
+      matches.push(...queryAllDeep(host.shadowRoot, selector));
     }
     return matches;
   }
