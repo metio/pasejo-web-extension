@@ -24,6 +24,20 @@ function lastConnectedPort(api) {
   return port;
 }
 
+// Opens the streaming port the popup uses for multi-store queries and
+// posts the `start` message immediately. Returns the popup-facing
+// port plus an array that captures every reply the background pushed
+// back through it (each entry is one of `{type:"result"|"done"|"error"}`,
+// in the order it arrived). Tests that need the native-port side
+// reach for `lastConnectedPort(api)` the same way as before.
+function openQueryStream(api, requests) {
+  const port = api.runtime.connect({ name: "query_multi_stream" });
+  const messages = [];
+  port.onMessage.addListener((msg) => messages.push(msg));
+  port.postMessage({ action: "start", requests });
+  return { port, messages };
+}
+
 describe("background.js", () => {
   let api;
 
@@ -257,49 +271,47 @@ describe("background.js", () => {
       });
     });
 
-    it("query_multi: a slot whose reply has the wrong `results` type becomes decode_error WITHOUT poisoning siblings", async () => {
-      // This is the load-bearing batch test: in a multi-store query,
-      // one store returning garbage must not skip every other store.
-      // The host's worker-thread parallelism already isolates failures
-      // at the decrypt step; this guard pins the same isolation at
-      // the type-validation step.
-      const replyPromise = invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [
-          { domain: "a.test", store: "a" },
-          { domain: "b.test", store: "b" },
-        ],
-      });
-      const port = lastConnectedPort(api);
-      port.__emitMessage({ request_id: 1, results: [{ name: "good" }] });
-      port.__emitMessage({ request_id: 2, results: "broken" });
-      const reply = await replyPromise;
-      expect(reply.ok).toBe(true);
-      expect(reply.responses[0].results[0].name).toBe("good");
-      expect(reply.responses[1]).toEqual({
+    it("streaming: a slot whose reply has the wrong `results` type becomes decode_error WITHOUT poisoning siblings", () => {
+      // The load-bearing batch test: in a multi-store query, one store
+      // returning garbage must not skip every other store. The host's
+      // worker-thread parallelism already isolates failures at the
+      // decrypt step; this guard pins the same isolation at the
+      // type-validation step under the new streaming model.
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+        { domain: "b.test", store: "b" },
+      ]);
+      const nativePort = lastConnectedPort(api);
+      nativePort.__emitMessage({ request_id: 1, results: [{ name: "good" }] });
+      nativePort.__emitMessage({ request_id: 2, results: "broken" });
+      const results = messages.filter((m) => m.type === "result");
+      expect(results.find((r) => r.index === 0).response.results[0].name).toBe(
+        "good",
+      );
+      expect(results.find((r) => r.index === 1).response).toEqual({
         error: "decode_error",
         hint: "`results` is not an array",
       });
+      expect(messages.at(-1)).toEqual({ type: "done" });
     });
 
-    it("query_multi: a host-error envelope on one slot still passes through (action-typed validator lets error shapes through)", async () => {
-      const replyPromise = invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [
-          { domain: "a.test", store: "a" },
-          { domain: "b.test", store: "b" },
-        ],
-      });
-      const port = lastConnectedPort(api);
-      port.__emitMessage({ request_id: 1, results: [{ name: "good" }] });
-      port.__emitMessage({
+    it("streaming: a host-error envelope on one slot still passes through (action-typed validator lets error shapes through)", () => {
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+        { domain: "b.test", store: "b" },
+      ]);
+      const nativePort = lastConnectedPort(api);
+      nativePort.__emitMessage({ request_id: 1, results: [{ name: "good" }] });
+      nativePort.__emitMessage({
         request_id: 2,
         error: "identity_locked",
         hint: "touch your key",
       });
-      const reply = await replyPromise;
-      expect(reply.responses[0].results[0].name).toBe("good");
-      expect(reply.responses[1]).toEqual({
+      const results = messages.filter((m) => m.type === "result");
+      expect(results.find((r) => r.index === 0).response.results[0].name).toBe(
+        "good",
+      );
+      expect(results.find((r) => r.index === 1).response).toEqual({
         error: "identity_locked",
         hint: "touch your key",
       });
@@ -495,146 +507,146 @@ describe("background.js", () => {
       expect(reply.ok).toBe(true);
     });
 
-    it("query_multi with an empty requests array resolves immediately without opening a port", async () => {
-      const reply = await invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [],
-      });
-      expect(reply).toEqual({ ok: true, responses: [] });
+    it("query_multi_stream with an empty requests array emits `done` immediately without opening a native port", () => {
+      const { messages } = openQueryStream(api, []);
+      expect(messages).toEqual([{ type: "done" }]);
       expect(api.runtime.connectNative).not.toHaveBeenCalled();
     });
 
-    it("query_multi fans out N requests with sequential request_ids and pairs replies by id", async () => {
-      const replyPromise = invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [
-          { domain: "a.test", store: "alpha" },
-          { domain: "b.test", store: "beta" },
-          { domain: "c.test", store: "gamma" },
-        ],
-      });
-      const port = lastConnectedPort(api);
-      // Verify the actions plus monotonic request_ids.
-      expect(port.postMessage.mock.calls.map(([msg]) => msg)).toEqual([
+    it("query_multi_stream fans out N requests with sequential request_ids and emits one `result` per reply, paired by id back to the input index", () => {
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "alpha" },
+        { domain: "b.test", store: "beta" },
+        { domain: "c.test", store: "gamma" },
+      ]);
+      const nativePort = lastConnectedPort(api);
+      // Verify the actions plus monotonic request_ids on the native
+      // side.
+      expect(nativePort.postMessage.mock.calls.map(([msg]) => msg)).toEqual([
         { request_id: 1, action: "query", domain: "a.test", store: "alpha" },
         { request_id: 2, action: "query", domain: "b.test", store: "beta" },
         { request_id: 3, action: "query", domain: "c.test", store: "gamma" },
       ]);
-      // Replies arrive in arbitrary order; the helper has to align them
-      // back to the input order on the way out.
-      port.__emitMessage({ request_id: 2, results: [{ name: "beta-hit" }] });
-      port.__emitMessage({ request_id: 1, results: [{ name: "alpha-hit" }] });
-      port.__emitMessage({ request_id: 3, results: [{ name: "gamma-hit" }] });
-      const reply = await replyPromise;
-      expect(reply.ok).toBe(true);
-      expect(reply.responses[0].results[0].name).toBe("alpha-hit");
-      expect(reply.responses[1].results[0].name).toBe("beta-hit");
-      expect(reply.responses[2].results[0].name).toBe("gamma-hit");
+      // Replies arrive in arbitrary order; each becomes a `result`
+      // message addressed to the matching input index.
+      nativePort.__emitMessage({ request_id: 2, results: [{ name: "beta-hit" }] });
+      nativePort.__emitMessage({ request_id: 1, results: [{ name: "alpha-hit" }] });
+      nativePort.__emitMessage({ request_id: 3, results: [{ name: "gamma-hit" }] });
+      const results = messages.filter((m) => m.type === "result");
+      expect(results).toHaveLength(3);
+      const byIndex = Object.fromEntries(
+        results.map((r) => [r.index, r.response]),
+      );
+      expect(byIndex[0].results[0].name).toBe("alpha-hit");
+      expect(byIndex[1].results[0].name).toBe("beta-hit");
+      expect(byIndex[2].results[0].name).toBe("gamma-hit");
       // request_id is stripped from each per-store payload.
-      for (const r of reply.responses) {
-        expect(r).not.toHaveProperty("request_id");
+      for (const r of results) {
+        expect(r.response).not.toHaveProperty("request_id");
       }
-      expect(port.disconnect).toHaveBeenCalled();
+      expect(messages.at(-1)).toEqual({ type: "done" });
+      expect(nativePort.disconnect).toHaveBeenCalled();
     });
 
-    it("query_multi defaults `store` to null when caller omits it", async () => {
-      const replyPromise = invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [{ domain: "x.test" }],
-      });
-      const port = lastConnectedPort(api);
-      expect(port.postMessage.mock.calls[0][0]).toEqual({
+    it("query_multi_stream defaults `store` to null when caller omits it", () => {
+      openQueryStream(api, [{ domain: "x.test" }]);
+      const nativePort = lastConnectedPort(api);
+      expect(nativePort.postMessage.mock.calls[0][0]).toEqual({
         request_id: 1,
         action: "query",
         domain: "x.test",
         store: null,
       });
-      port.__emitMessage({ request_id: 1, results: [] });
-      await replyPromise;
     });
 
-    it("query_multi treats a port disconnect as transport_error for every still-pending request", async () => {
-      const replyPromise = invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [
-          { domain: "a.test", store: "a" },
-          { domain: "b.test", store: "b" },
-          { domain: "c.test", store: "c" },
-        ],
-      });
-      const port = lastConnectedPort(api);
-      // Only one reply lands before the disconnect.
-      port.__emitMessage({ request_id: 2, results: [{ name: "b" }] });
+    it("query_multi_stream treats a native disconnect as transport_error for every still-pending slot", () => {
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+        { domain: "b.test", store: "b" },
+        { domain: "c.test", store: "c" },
+      ]);
+      const nativePort = lastConnectedPort(api);
+      // Only one reply lands before the native side disconnects.
+      nativePort.__emitMessage({ request_id: 2, results: [{ name: "b" }] });
       api.runtime.lastError = { message: "host crashed" };
-      port.__emitDisconnect();
-      const reply = await replyPromise;
-      expect(reply.ok).toBe(true);
-      expect(reply.responses[0]).toEqual({
+      nativePort.__emitDisconnect();
+      const results = messages.filter((m) => m.type === "result");
+      const byIndex = Object.fromEntries(
+        results.map((r) => [r.index, r.response]),
+      );
+      expect(byIndex[0]).toEqual({
         error: "transport_error",
         hint: "host crashed",
       });
-      expect(reply.responses[1].results[0].name).toBe("b");
-      expect(reply.responses[2]).toEqual({
+      expect(byIndex[1].results[0].name).toBe("b");
+      expect(byIndex[2]).toEqual({
         error: "transport_error",
         hint: "host crashed",
       });
+      expect(messages.at(-1)).toEqual({ type: "done" });
     });
 
-    it("query_multi disconnects with the fallback message when lastError is unset", async () => {
-      const replyPromise = invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [{ domain: "a.test", store: "a" }],
-      });
-      const port = lastConnectedPort(api);
+    it("query_multi_stream disconnects with the fallback message when lastError is unset", () => {
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+      ]);
+      const nativePort = lastConnectedPort(api);
       api.runtime.lastError = undefined;
-      port.__emitDisconnect();
-      const reply = await replyPromise;
-      expect(reply.responses[0].hint).toBe(
+      nativePort.__emitDisconnect();
+      const result = messages.find((m) => m.type === "result");
+      expect(result.response.hint).toBe(
         "native host disconnected before reply",
       );
     });
 
-    it("query_multi rejects the whole batch when a reply violates the size limits", async () => {
-      const replyPromise = invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [{ domain: "a.test", store: "a" }],
-      });
-      const port = lastConnectedPort(api);
+    it("query_multi_stream emits a top-level `error` and disconnects when a reply violates the size limits", () => {
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+      ]);
+      const nativePort = lastConnectedPort(api);
       const huge = "x".repeat(64 * 1024 + 1);
-      port.__emitMessage({ request_id: 1, hint: huge });
-      const reply = await replyPromise;
-      expect(reply.ok).toBe(false);
-      expect(reply.error).toMatch(/longer than/);
-      expect(port.disconnect).toHaveBeenCalled();
+      nativePort.__emitMessage({ request_id: 1, hint: huge });
+      const error = messages.find((m) => m.type === "error");
+      expect(error).toBeDefined();
+      expect(error.error).toMatch(/longer than/);
+      // Shape violations poison the whole stream — no `done`, just the
+      // top-level error and a teardown of both ports. The background
+      // closes the stream from its side (`backgroundPort.disconnect`);
+      // the popup observes this through its onDisconnect listener
+      // rather than via its own `.disconnect` spy.
+      expect(nativePort.disconnect).toHaveBeenCalled();
+      expect(
+        api.__streamPairs.at(-1).backgroundPort.disconnect,
+      ).toHaveBeenCalled();
     });
 
-    it("query_multi drops a reply whose request_id is not pending (out-of-band or repeated)", async () => {
+    it("query_multi_stream drops a reply whose request_id is not pending (out-of-band or repeated)", async () => {
       vi.useFakeTimers();
-      const replyPromise = invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [{ domain: "a.test", store: "a" }],
-      });
-      const port = lastConnectedPort(api);
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+      ]);
+      const nativePort = lastConnectedPort(api);
       // Wrong request_id — the backstop is the per-request timer.
-      port.__emitMessage({ request_id: 99, results: [] });
+      nativePort.__emitMessage({ request_id: 99, results: [] });
       // Also: non-integer.
-      port.__emitMessage({ request_id: "abc", results: [] });
+      nativePort.__emitMessage({ request_id: "abc", results: [] });
       // Also: missing.
-      port.__emitMessage({ results: [] });
+      nativePort.__emitMessage({ results: [] });
       // Also: not even an object.
-      port.__emitMessage(42);
+      nativePort.__emitMessage(42);
       // Nothing has resolved the only pending slot yet. Advance time
       // to fire the per-request timeout.
       await vi.advanceTimersByTimeAsync(30_000);
-      const reply = await replyPromise;
-      expect(reply.ok).toBe(true);
-      expect(reply.responses[0].error).toBe("transport_error");
-      expect(reply.responses[0].hint).toMatch(/request 1 did not get a response/);
+      const results = messages.filter((m) => m.type === "result");
+      expect(results).toHaveLength(1);
+      expect(results[0].response.error).toBe("transport_error");
+      expect(results[0].response.hint).toMatch(/request 1 did not get a response/);
     });
 
-    it("query_multi marks a single request transport_error when postMessage throws for it", async () => {
+    it("query_multi_stream marks a single request transport_error when postMessage throws for it", () => {
       // First postMessage throws; second succeeds. The thrown call's
-      // slot ends up as transport_error; the second resolves normally.
+      // slot ends up as transport_error; the second resolves normally
+      // when its reply arrives.
       let call = 0;
       api.runtime.connectNative = vi.fn(() => {
         const port = {
@@ -652,71 +664,138 @@ describe("background.js", () => {
         api.__ports.push(port);
         return port;
       });
-      const replyPromise = invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [
-          { domain: "a.test", store: "a" },
-          { domain: "b.test", store: "b" },
-        ],
-      });
-      const port = lastConnectedPort(api);
-      // Drive the second slot's reply through the listener directly.
-      const onMessage = port.onMessage.addListener.mock.calls[0][0];
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+        { domain: "b.test", store: "b" },
+      ]);
+      const nativePort = lastConnectedPort(api);
+      const onMessage = nativePort.onMessage.addListener.mock.calls[0][0];
       onMessage({ request_id: 2, results: [] });
-      const reply = await replyPromise;
-      expect(reply.responses[0]).toEqual({
+      const byIndex = Object.fromEntries(
+        messages
+          .filter((m) => m.type === "result")
+          .map((r) => [r.index, r.response]),
+      );
+      expect(byIndex[0]).toEqual({
         error: "transport_error",
         hint: "write failed",
       });
-      expect(reply.responses[1].results).toEqual([]);
+      expect(byIndex[1].results).toEqual([]);
     });
 
-    it("query_multi propagates a connectNative throw to the caller as ok:false", async () => {
+    it("query_multi_stream propagates a connectNative throw to the popup as a top-level error", () => {
       api.runtime.connectNative = vi.fn(() => {
         throw new Error("native messaging disabled");
       });
-      const reply = await invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [{ domain: "a.test", store: "a" }],
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+      ]);
+      expect(messages.find((m) => m.type === "error")).toEqual({
+        type: "error",
+        error: "native messaging disabled",
       });
-      expect(reply.ok).toBe(false);
-      expect(reply.error).toMatch(/disabled/);
     });
 
-    it("query_multi rejects with a clean message when connectNative returns null", async () => {
+    it("query_multi_stream surfaces a clean error when connectNative returns null", () => {
       api.runtime.connectNative = vi.fn(() => null);
-      const reply = await invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [{ domain: "a.test", store: "a" }],
-      });
-      expect(reply).toEqual({
-        ok: false,
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+      ]);
+      expect(messages.find((m) => m.type === "error")).toEqual({
+        type: "error",
         error: "native messaging port could not be opened",
       });
     });
 
-    it("query_multi without a requests array degenerates to an empty batch", async () => {
-      const reply = await invokeBackgroundListener(api, {
-        type: "query_multi",
-      });
-      expect(reply).toEqual({ ok: true, responses: [] });
+    it("query_multi_stream rejects a malformed start message and disconnects", () => {
+      const port = api.runtime.connect({ name: "query_multi_stream" });
+      const messages = [];
+      port.onMessage.addListener((msg) => messages.push(msg));
+      // Send a message that isn't `{action: "start"}`.
+      port.postMessage({ action: "fnord" });
+      expect(messages).toEqual([
+        {
+          type: "error",
+          error: "expected a `start` message with a requests array",
+        },
+      ]);
+      // The background tears the stream down from its own side.
+      expect(
+        api.__streamPairs.at(-1).backgroundPort.disconnect,
+      ).toHaveBeenCalled();
     });
 
-    it("query_multi tolerates port.disconnect() throwing on cleanup", async () => {
-      // A port that survives a write+read round but throws when we
-      // tear it down on success. The batch must still resolve cleanly
-      // — disconnect throws are silently swallowed.
+    it("query_multi_stream ignores a second `start` message on the same port", () => {
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+      ]);
+      const nativePort = lastConnectedPort(api);
+      // Second start arrives on the same port — silently dropped.
+      api.__streamPairs.at(-1).popupPort.postMessage({
+        action: "start",
+        requests: [{ domain: "another.test", store: "b" }],
+      });
+      // Only the first batch's native port was opened (one connectNative
+      // call total).
+      expect(api.runtime.connectNative).toHaveBeenCalledTimes(1);
+      // First batch settles normally.
+      nativePort.__emitMessage({ request_id: 1, results: [] });
+      expect(messages.find((m) => m.type === "done")).toBeDefined();
+    });
+
+    it("query_multi_stream ignores ports opened with the wrong name (defence against future listeners)", () => {
+      const port = api.runtime.connect({ name: "some_other_channel" });
+      // No background listener should claim this port. Sending a start
+      // message produces no replies, no native port opened.
+      port.postMessage({ action: "start", requests: [{ domain: "a.test" }] });
+      expect(api.runtime.connectNative).not.toHaveBeenCalled();
+    });
+
+    it("query_multi_stream tears down the native side when the popup port disconnects mid-flight", () => {
+      const { port: popupPort } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+        { domain: "b.test", store: "b" },
+      ]);
+      const nativePort = lastConnectedPort(api);
+      // Popup closes (e.g. user dismisses the popup) before any reply.
+      popupPort.disconnect();
+      expect(nativePort.disconnect).toHaveBeenCalled();
+    });
+
+    it("query_multi_stream silently drops native replies that arrive after the popup port disconnects", () => {
+      const { messages, port: popupPort } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+      ]);
+      const nativePort = lastConnectedPort(api);
+      popupPort.disconnect();
+      const before = messages.length;
+      // A stale reply arriving after teardown must not crash and must
+      // not surface to the popup.
+      nativePort.__emitMessage({ request_id: 1, results: [] });
+      expect(messages.length).toBe(before);
+    });
+
+    it("query_multi_stream without a requests array (non-array `requests` field) degenerates to an empty batch", () => {
+      const port = api.runtime.connect({ name: "query_multi_stream" });
+      const messages = [];
+      port.onMessage.addListener((msg) => messages.push(msg));
+      port.postMessage({ action: "start", requests: "broken" });
+      expect(messages).toEqual([{ type: "done" }]);
+      expect(api.runtime.connectNative).not.toHaveBeenCalled();
+    });
+
+    it("query_multi_stream tolerates port.disconnect() throwing on cleanup", () => {
+      // Native port that throws when we tear it down on success. The
+      // batch must still emit its `done` message — disconnect throws
+      // are silently swallowed.
       const onMessageListeners = [];
-      const onDisconnectListeners = [];
       api.runtime.connectNative = vi.fn(() => {
         const port = {
           name: "wtf.metio.pasejo",
           onMessage: {
             addListener: vi.fn((l) => onMessageListeners.push(l)),
           },
-          onDisconnect: {
-            addListener: vi.fn((l) => onDisconnectListeners.push(l)),
-          },
+          onDisconnect: { addListener: vi.fn() },
           postMessage: vi.fn(),
           disconnect: vi.fn(() => {
             throw new Error("port is already closed");
@@ -725,39 +804,123 @@ describe("background.js", () => {
         api.__ports.push(port);
         return port;
       });
-      const replyPromise = invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [{ domain: "a.test", store: "a" }],
-      });
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+      ]);
       const [onMessage] = onMessageListeners;
       onMessage({ request_id: 1, results: [] });
-      const reply = await replyPromise;
-      expect(reply.ok).toBe(true);
-      expect(reply.responses[0].results).toEqual([]);
+      expect(messages.at(-1)).toEqual({ type: "done" });
     });
 
-    it("query_multi tolerates a duplicate reply for an already-settled request_id", async () => {
-      const replyPromise = invokeBackgroundListener(api, {
-        type: "query_multi",
-        requests: [{ domain: "a.test", store: "a" }],
+    it("query_multi_stream tolerates streamPort.disconnect throwing on the malformed-start path", () => {
+      // The malformed-start handler routes through `safeDisconnectPort`
+      // which catches a throw from `disconnect`. Drive that branch
+      // by handing the background an onConnect listener-fired port
+      // whose `disconnect` throws.
+      let messageListener;
+      const streamPort = {
+        name: "query_multi_stream",
+        onMessage: {
+          addListener: vi.fn((l) => {
+            messageListener = l;
+          }),
+        },
+        onDisconnect: { addListener: vi.fn() },
+        postMessage: vi.fn(),
+        disconnect: vi.fn(() => {
+          throw new Error("already closed");
+        }),
+      };
+      const [onConnect] = api.__onConnectListeners;
+      onConnect(streamPort);
+      // Malformed start → background posts `{type:"error"}` then
+      // routes through safeDisconnectPort. The throw must not
+      // propagate.
+      expect(() => messageListener({ action: "fnord" })).not.toThrow();
+      expect(streamPort.postMessage).toHaveBeenCalledWith({
+        type: "error",
+        error: "expected a `start` message with a requests array",
       });
-      const port = lastConnectedPort(api);
-      port.__emitMessage({ request_id: 1, results: [{ name: "first" }] });
-      // Late duplicate — must be silently dropped, must not re-resolve.
-      port.__emitMessage({ request_id: 1, results: [{ name: "second" }] });
-      const reply = await replyPromise;
-      expect(reply.responses[0].results[0].name).toBe("first");
+      expect(streamPort.disconnect).toHaveBeenCalled();
     });
 
-    it("query_multi ignores a per-request timeout that fires after the slot has settled (review7 item A)", async () => {
-      // The race the fix targets: a per-request setTimeout callback
-      // can already be in the browser's macrotask queue when
-      // `finalize` runs `clearTimeout` from the message-path. The
-      // cancellation is too late — the queued callback still runs.
-      // Without the `pending.has` guard inside `finalize`, that stale
-      // callback overwrites `responses[idx]` with `transport_error`
-      // AFTER the batch has already resolved with the real reply,
-      // mutating the array the popup is reading.
+    it("query_multi_stream after the popup port disconnects: late native replies hit the `abandoned` guard and don't leak through safePostMessage", () => {
+      // Popup disconnects mid-flight. The background marks the stream
+      // `abandoned` and tears the native port down. If a malformed
+      // native reply was already in flight, the listener's shape-
+      // validation catch path routes through `safePostMessage` —
+      // the `abandoned` guard there must drop the message rather
+      // than try to postMessage on a port the popup has closed. The
+      // second teardown call from that catch path also exercises
+      // teardown's idempotent early-return.
+      const { port: popupPort } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+      ]);
+      const nativePort = lastConnectedPort(api);
+      popupPort.disconnect();
+      // The mock's port pair fires the background side's onDisconnect
+      // listener, which sets `abandoned = true` and calls `teardown`.
+      // A malformed reply now arriving still fires the message
+      // listener (Chrome's real port can deliver messages that were
+      // already in flight before the disconnect propagated).
+      const huge = "x".repeat(64 * 1024 + 1);
+      // No throw despite the catch path running with `abandoned=true`
+      // and the inner teardown call being a second one.
+      expect(() => nativePort.__emitMessage({ request_id: 1, hint: huge })).not.toThrow();
+    });
+
+    it("query_multi_stream tolerates streamPort.postMessage throwing (popup port already closed)", () => {
+      // Empty `requests` triggers safePostMessage({type:"done"}). If
+      // the popup port has already been torn down by the time we
+      // get there, postMessage throws — and the catch in
+      // safePostMessage swallows it so the background doesn't crash.
+      let messageListener;
+      const streamPort = {
+        name: "query_multi_stream",
+        onMessage: {
+          addListener: vi.fn((l) => {
+            messageListener = l;
+          }),
+        },
+        onDisconnect: { addListener: vi.fn() },
+        postMessage: vi.fn(() => {
+          throw new Error("popup port already closed");
+        }),
+        disconnect: vi.fn(),
+      };
+      const [onConnect] = api.__onConnectListeners;
+      onConnect(streamPort);
+      expect(() =>
+        messageListener({ action: "start", requests: [] }),
+      ).not.toThrow();
+      expect(streamPort.postMessage).toHaveBeenCalled();
+    });
+
+    it("query_multi_stream tolerates a duplicate reply for an already-settled request_id", () => {
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+      ]);
+      const nativePort = lastConnectedPort(api);
+      nativePort.__emitMessage({ request_id: 1, results: [{ name: "first" }] });
+      // Late duplicate — must be silently dropped, must not re-emit.
+      nativePort.__emitMessage({ request_id: 1, results: [{ name: "second" }] });
+      const results = messages.filter((m) => m.type === "result");
+      expect(results).toHaveLength(1);
+      expect(results[0].response.results[0].name).toBe("first");
+      // And `done` arrives exactly once.
+      expect(messages.filter((m) => m.type === "done")).toHaveLength(1);
+    });
+
+    it("query_multi_stream ignores a per-request timeout that fires after the slot has settled (review7 item A)", () => {
+      // The race the `pending.has` guard inside `settle` exists to
+      // catch: a per-request setTimeout callback can already be in
+      // the browser's macrotask queue when the message-path calls
+      // `clearTimeout`. The cancellation is too late — the queued
+      // callback still runs. Without the guard, that stale callback
+      // emits a second `result` for the same slot with a
+      // `transport_error` payload, and the popup would render the
+      // affected store as skipped even though it had returned
+      // results.
       //
       // vitest's fake-timer engine respects clearTimeout
       // synchronously, so the natural race doesn't reproduce there.
@@ -775,12 +938,11 @@ describe("background.js", () => {
       };
       globalThis.clearTimeout = () => {};
       try {
-        const replyPromise = invokeBackgroundListener(api, {
-          type: "query_multi",
-          requests: [{ domain: "a.test", store: "a" }],
-        });
-        const port = lastConnectedPort(api);
-        port.__emitMessage({
+        const { messages } = openQueryStream(api, [
+          { domain: "a.test", store: "a" },
+        ]);
+        const nativePort = lastConnectedPort(api);
+        nativePort.__emitMessage({
           request_id: 1,
           results: [{ name: "real" }],
         });
@@ -789,12 +951,12 @@ describe("background.js", () => {
         // time — but in the race it fires anyway.
         expect(capturedTimers).toHaveLength(1);
         capturedTimers[0]();
-        const reply = await replyPromise;
-        expect(reply.ok).toBe(true);
-        expect(reply.responses[0]).toEqual({ results: [{ name: "real" }] });
-        // CRITICAL: the real reply must NOT have been overwritten
-        // with the stale-timer's transport_error payload.
-        expect(reply.responses[0].error).toBeUndefined();
+        // Exactly one `result` was emitted, carrying the real reply,
+        // and the stale-timer's transport_error did NOT overwrite it.
+        const results = messages.filter((m) => m.type === "result");
+        expect(results).toHaveLength(1);
+        expect(results[0].response).toEqual({ results: [{ name: "real" }] });
+        expect(results[0].response.error).toBeUndefined();
       } finally {
         globalThis.setTimeout = origSetTimeout;
         globalThis.clearTimeout = origClearTimeout;

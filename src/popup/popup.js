@@ -411,6 +411,14 @@ async function runQuery() {
     setStatus("No domain for the active tab — nothing to search.");
     return;
   }
+  if (state.store === ALL_STORES) {
+    // Multi-store mode emits its own progress-counter status from
+    // first synchronous tick onwards, so the grace-period generic
+    // message would just race with — and briefly overwrite — the
+    // counter. Skip it.
+    await runMultiStoreQuery(generation);
+    return;
+  }
   // Defer the "Searching for X…" message so fast hosts don't flash it
   // on screen for a few frames before the results overwrite it. Slow
   // hosts (>250 ms) still get user feedback.
@@ -422,11 +430,6 @@ async function runQuery() {
   }, 250);
 
   try {
-    if (state.store === ALL_STORES) {
-      await runMultiStoreQuery(generation);
-      return;
-    }
-
     let reply;
     try {
       reply = await sendBackground({
@@ -477,59 +480,197 @@ async function runMultiStoreQuery(generation) {
     );
     return;
   }
-  // Single native connection carrying every per-store query as one
-  // `query_multi` batch. The host's worker threads decrypt stores in
-  // parallel, so a YubiKey-blocked store holds back only its own
-  // response while every other store's reply arrives normally.
-  const attempts = await fanOutBatch();
+  const total = state.stores.length;
+  const matches = [];
+  const skipped = [];
+  let answered = 0;
+
+  const setSearchingStatus = () => {
+    // `streamMultiStoreBatch` gates every callback dispatch on
+    // `generation === state.queryGeneration`, and the synchronous
+    // initial call below runs before any reentrant runQuery can
+    // bump the generation. So this helper assumes the current
+    // generation; the canonical stale-suppression check lives in
+    // the stream consumer rather than at every status update site.
+    setStatus(
+      `Searching for ${state.domain}… (${answered}/${total} stores answered)`,
+    );
+  };
+  // Emit the initial progress line synchronously so the user sees
+  // "0/N answered" before any reply lands, instead of staring at an
+  // empty status line.
+  setSearchingStatus();
+
+  // Repaint the results list against the current `matches` / `skipped`
+  // accumulator. Called on every incoming per-store result so the
+  // user sees matches arrive one store at a time rather than after
+  // the slowest store's timeout. Same generation-gating reasoning
+  // as `setSearchingStatus`: the stream consumer is the gate.
+  const renderIncremental = () => {
+    elements.results.replaceChildren();
+    // Each store's results are pre-sorted by score (the host sorts
+    // them); the merged list needs one more sort across stores so the
+    // top match for the page always sits at the top of the popup
+    // regardless of which store responded first.
+    const sorted = [...matches].sort(
+      (a, b) => (b.score ?? 0) - (a.score ?? 0),
+    );
+    for (const match of sorted) {
+      elements.results.appendChild(renderMatch(match));
+    }
+  };
+
+  await streamMultiStoreBatch(generation, (index, response) => {
+    answered += 1;
+    // The stream consumer's gating contract guarantees indices
+    // within `[0, state.stores.length)` for the run we kicked off,
+    // but a misbehaving background that emitted a forged `result`
+    // with an out-of-bounds index would dereference `undefined.name`
+    // here without the optional-chaining + `store#N` fallback.
+    const storeName = state.stores[index]?.name ?? `store#${index}`;
+    if (
+      response &&
+      !response.error &&
+      Array.isArray(response.results)
+    ) {
+      matches.push(...response.results);
+    } else {
+      skipped.push(storeName);
+    }
+    renderIncremental();
+    if (answered < total) {
+      setSearchingStatus();
+    }
+  });
   if (generation !== state.queryGeneration) {
     return;
   }
-  const matches = attempts.flatMap((a) => a.results);
-  // Each store's results are already sorted by score (the host does it);
-  // the merged list needs one more sort across stores.
-  matches.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-  const skipped = attempts.filter((a) => a.skipped).map((a) => a.name);
-  showMatches(matches, skipped.length, skipped);
+  // Final status: switch from "(answered/total)" progress copy to the
+  // settled "N matches." / "No matches…" / "X store(s) skipped" copy
+  // showMatches already knows how to format.
+  const sorted = [...matches].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  elements.results.replaceChildren();
+  showMatches(sorted, skipped.length, skipped);
 }
 
-// Fans every per-store query through a single `connectNative` as one
-// `query_multi` batch. The host processes requests on worker threads
-// so a YubiKey-blocked store holds back only its own slot — the rest
-// come back as fast as their own decrypts allow. The background
-// returns a `responses` array aligned 1:1 with the input order, so we
-// re-pair each entry with its store name.
-async function fanOutBatch() {
-  let reply;
-  try {
-    reply = await api.runtime.sendMessage({
-      type: "query_multi",
-      requests: state.stores.map((entry) => ({
-        domain: state.domain,
-        store: entry.name,
-      })),
-    });
-  } catch (_) {
-    // The whole batch failed — treat every store as skipped.
-    return state.stores.map((entry) => ({
-      name: entry.name,
-      results: [],
-      skipped: true,
-    }));
-  }
-  if (!reply?.ok || !Array.isArray(reply.responses)) {
-    return state.stores.map((entry) => ({
-      name: entry.name,
-      results: [],
-      skipped: true,
-    }));
-  }
-  return state.stores.map((entry, idx) => {
-    const response = reply.responses[idx];
-    if (!response || response.error || !Array.isArray(response.results)) {
-      return { name: entry.name, results: [], skipped: true };
+// Opens a long-lived port to the background and consumes the streamed
+// per-store replies. Calls `onResult(index, response)` for every
+// `{type:"result"}` message and resolves when the background emits
+// `{type:"done"}` or the port disconnects (which the background does
+// once every slot has settled). Slots that never landed a reply
+// before disconnect are reported as `transport_error` envelopes so
+// the popup's "skipped" accounting stays accurate without the popup
+// having to track its own per-request timer.
+function streamMultiStoreBatch(generation, onResult) {
+  return new Promise((resolve) => {
+    const total = state.stores.length;
+    const settled = new Set();
+    let port;
+    try {
+      port = api.runtime.connect({ name: "query_multi_stream" });
+    } catch (err) {
+      // Failed before opening — every store goes down as skipped.
+      for (let i = 0; i < total; i += 1) {
+        onResult(i, { error: "transport_error", hint: err.message });
+        settled.add(i);
+      }
+      resolve();
+      return;
     }
-    return { name: entry.name, results: response.results, skipped: false };
+    if (!port) {
+      for (let i = 0; i < total; i += 1) {
+        onResult(i, {
+          error: "transport_error",
+          hint: "could not open the streaming port",
+        });
+        settled.add(i);
+      }
+      resolve();
+      return;
+    }
+    // Consolidated "best effort, ignore throw" wrapper for the
+    // popup-side disconnect. Both the `done` and `error` paths use
+    // this; double-disconnect on a port that has already been torn
+    // down by the background can throw in real browsers.
+    const safeDisconnect = () => {
+      try {
+        port.disconnect();
+      } catch (_) {
+        // Already disconnected.
+      }
+    };
+    // Marks any store that never had a result message reported as a
+    // transport failure and resolves the outer Promise. The for-loop
+    // is idempotent (each slot can only be `settled.add`-ed once) and
+    // `resolve()` is naturally a no-op when already called, so this
+    // function is safe to invoke from multiple settlement paths
+    // (`done` message, `error` message, port disconnect) without an
+    // explicit guard.
+    const finish = () => {
+      for (let i = 0; i < total; i += 1) {
+        if (!settled.has(i)) {
+          settled.add(i);
+          if (generation === state.queryGeneration) {
+            onResult(i, {
+              error: "transport_error",
+              hint: "the background closed the stream before answering",
+            });
+          }
+        }
+      }
+      resolve();
+    };
+    port.onMessage.addListener((message) => {
+      if (!message || typeof message !== "object") {
+        return;
+      }
+      if (message.type === "result") {
+        if (!Number.isInteger(message.index) || settled.has(message.index)) {
+          return;
+        }
+        settled.add(message.index);
+        if (generation === state.queryGeneration) {
+          onResult(message.index, message.response);
+        }
+        return;
+      }
+      if (message.type === "done") {
+        finish();
+        safeDisconnect();
+        return;
+      }
+      if (message.type === "error") {
+        // Background reported a setup failure (e.g. connectNative
+        // threw). Treat as a whole-batch transport error: every
+        // unsettled slot is marked skipped via `finish()`.
+        finish();
+        safeDisconnect();
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      finish();
+    });
+    try {
+      port.postMessage({
+        action: "start",
+        requests: state.stores.map((entry) => ({
+          domain: state.domain,
+          store: entry.name,
+        })),
+      });
+    } catch (err) {
+      // postMessage threw before the port carried our `start` — every
+      // store goes down as skipped.
+      for (let i = 0; i < total; i += 1) {
+        if (!settled.has(i)) {
+          settled.add(i);
+          if (generation === state.queryGeneration) {
+            onResult(i, { error: "transport_error", hint: err.message });
+          }
+        }
+      }
+      finish();
+    }
   });
 }
 

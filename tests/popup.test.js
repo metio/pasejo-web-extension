@@ -54,6 +54,34 @@ async function flushAsync() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+// Pretends to be the background side of the popup's streaming port.
+// Posts each `replies` entry to the popup's onMessage listeners in
+// order, with a microtask hop between them so the popup can repaint
+// its incremental state, then closes the stream with `{type:"done"}`.
+// Tests that want to assert on intermediate state (e.g. the progress
+// counter after the second-of-three results lands) can call
+// `pushStreamReply(api, reply)` directly instead.
+async function driveStreamReplies(api, replies) {
+  const pair = api.__streamPairs.at(-1);
+  if (!pair) {
+    throw new Error("popup never opened a streaming port");
+  }
+  for (const reply of replies) {
+    pair.backgroundPort.postMessage(reply);
+    await flushAsync();
+  }
+  pair.backgroundPort.postMessage({ type: "done" });
+  await flushAsync();
+}
+
+function pushStreamReply(api, reply) {
+  const pair = api.__streamPairs.at(-1);
+  if (!pair) {
+    throw new Error("popup never opened a streaming port");
+  }
+  pair.backgroundPort.postMessage(reply);
+}
+
 // Externally-controllable promise for racing two runQuery flows in a
 // deterministic order: capture a `deferred()`, hand its `.promise`
 // to a `mockReturnValueOnce`, then call `resolve()` whenever the test
@@ -1586,40 +1614,55 @@ describe("popup.js", () => {
       expect(popup.elements.status.classList.contains("error")).toBe(false);
     });
 
-    it("drops a late multi-store fan-out that arrives after fresh results have rendered", async () => {
+    it("drops a late multi-store stream reply that arrives after a fresher query started", async () => {
       const { api, popup } = await setUp();
       popup.state.domain = "example.com";
       popup.state.store = popup.ALL_STORES;
       popup.state.protocolOk = true;
       popup.state.stores = [{ name: "a" }, { name: "b" }];
-      // Both queries go through one query_multi message each. q1's
-      // batch is deferred (never resolves until we say so) and q2's
-      // batch resolves immediately with fresh results.
-      const d1 = deferred();
-      api.runtime.sendMessage
-        // q1's whole batch:
-        .mockReturnValueOnce(d1.promise)
-        // q2's whole batch:
-        .mockResolvedValueOnce({
-          ok: true,
-          responses: [
-            { results: [{ name: "fresh-a", match_kind: "name", score: 0.9 }] },
-            { results: [{ name: "fresh-b", match_kind: "name", score: 0.7 }] },
-          ],
-        });
+      // Start q1 — its stream stays open with no replies until we say
+      // so. Then start q2 with a fresh stream that resolves
+      // immediately.
       const q1 = popup.runQuery();
+      const q1Pair = api.__streamPairs.at(-1);
       const q2 = popup.runQuery();
-      // Wait for q2 to finish rendering.
-      await flushAsync();
-      await flushAsync();
-      // Now let q1's stale batch complete.
-      d1.resolve({
-        ok: true,
-        responses: [
-          { results: [{ name: "stale-a", match_kind: "name", score: 0.9 }] },
-          { results: [{ name: "stale-b", match_kind: "name", score: 0.7 }] },
-        ],
+      // q2 emits its fresh results and closes.
+      const q2Pair = api.__streamPairs.at(-1);
+      expect(q2Pair).not.toBe(q1Pair);
+      q2Pair.backgroundPort.postMessage({
+        type: "result",
+        index: 0,
+        response: {
+          results: [{ name: "fresh-a", match_kind: "name", score: 0.9 }],
+        },
       });
+      q2Pair.backgroundPort.postMessage({
+        type: "result",
+        index: 1,
+        response: {
+          results: [{ name: "fresh-b", match_kind: "name", score: 0.7 }],
+        },
+      });
+      q2Pair.backgroundPort.postMessage({ type: "done" });
+      await flushAsync();
+      // Now q1's stale stream delivers — these arrive AFTER fresh
+      // results have been painted, so the generation gate must drop
+      // them on the floor.
+      q1Pair.backgroundPort.postMessage({
+        type: "result",
+        index: 0,
+        response: {
+          results: [{ name: "stale-a", match_kind: "name", score: 0.9 }],
+        },
+      });
+      q1Pair.backgroundPort.postMessage({
+        type: "result",
+        index: 1,
+        response: {
+          results: [{ name: "stale-b", match_kind: "name", score: 0.7 }],
+        },
+      });
+      q1Pair.backgroundPort.postMessage({ type: "done" });
       await Promise.all([q1, q2]);
       const names = Array.from(
         popup.elements.results.querySelectorAll(".name"),
@@ -1664,7 +1707,7 @@ describe("popup.js", () => {
     });
   });
 
-  describe("runMultiStoreQuery", () => {
+  describe("runMultiStoreQuery (streaming pipeline)", () => {
     it("refuses to fan out without a protocol-verified host", async () => {
       const { popup } = await setUp();
       popup.state.domain = "example.com";
@@ -1690,106 +1733,216 @@ describe("popup.js", () => {
       popup.state.store = popup.ALL_STORES;
       popup.state.protocolOk = true;
       popup.state.stores = [{ name: "a" }];
-      api.runtime.sendMessage.mockResolvedValueOnce({
-        ok: true,
-        responses: [{ results: [] }],
-      });
-      await popup.runQuery();
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      await driveStreamReplies(api, [
+        { type: "result", index: 0, response: { results: [] } },
+      ]);
+      await queryDone;
       expect(popup.elements.status.textContent).toMatch(/No matches/);
     });
 
-    it("treats a missing score on a result as zero when sorting", async () => {
+    it("treats a missing score on a result as zero when sorting across stores", async () => {
       const { api, popup } = await setUp();
       popup.state.domain = "example.com";
       popup.state.store = popup.ALL_STORES;
       popup.state.protocolOk = true;
       popup.state.stores = [{ name: "a" }, { name: "b" }];
-      // The host sorts within each store; the popup sorts across
-      // stores. Mixing scored / unscored entries in BOTH per-store
-      // slots covers both sides of the `?? 0` fallback in the
-      // popup's merge sort.
-      api.runtime.sendMessage.mockResolvedValueOnce({
-        ok: true,
-        responses: [
-          {
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      await driveStreamReplies(api, [
+        {
+          type: "result",
+          index: 0,
+          response: {
             results: [
               { name: "high", match_kind: "name", score: 0.7 },
               { name: "no_score_b", match_kind: "name" },
             ],
           },
-          {
+        },
+        {
+          type: "result",
+          index: 1,
+          response: {
             results: [
               { name: "no_score_a", match_kind: "name" },
               { name: "mid", match_kind: "name", score: 0.5 },
             ],
           },
-        ],
-      });
-      await popup.runQuery();
+        },
+      ]);
+      await queryDone;
       const names = Array.from(
         popup.elements.results.querySelectorAll(".name"),
       ).map((n) => n.textContent);
       // Descending score: 0.7, 0.5, then the two zero-scored entries
-      // in stable insertion order.
+      // in stable order.
       expect(names[0]).toBe("high");
       expect(names[1]).toBe("mid");
       expect(names.slice(2).sort()).toEqual(["no_score_a", "no_score_b"]);
     });
   });
 
-  describe("multi-store batch path (item V)", () => {
-    // The popup uses a single `query_multi` message to background —
-    // one native connection serving every store concurrently, so a
-    // stuck store doesn't gate the rest. The background returns a
-    // {ok, responses} envelope already aligned to the input store
-    // order; the popup unpairs it back into the {results, skipped}
-    // shape the rest of runMultiStoreQuery expects.
+  describe("multi-store streaming path (item J + L)", () => {
+    // The popup opens a long-lived `runtime.connect` port to the
+    // background and consumes each store's reply AS IT ARRIVES,
+    // updating the status counter and the results list incrementally.
+    // This is what makes a YubiKey-blocked store stop gating the
+    // fast stores on user-perceived latency.
 
-    it("merges results across stores via the batch path", async () => {
+    it("opens the streaming port with the agreed name and posts a `start` carrying every store as a separate request", async () => {
       const { api, popup } = await setUp();
       popup.state.domain = "example.com";
       popup.state.store = popup.ALL_STORES;
       popup.state.protocolOk = true;
       popup.state.stores = [{ name: "a" }, { name: "b" }];
-      api.runtime.sendMessage.mockResolvedValueOnce({
-        ok: true,
-        responses: [
-          { results: [{ name: "low", store: "a", match_kind: "name", score: 0.5 }] },
-          {
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      expect(api.runtime.connect).toHaveBeenCalledWith({
+        name: "query_multi_stream",
+      });
+      const pair = api.__streamPairs.at(-1);
+      // The `start` message lands on the background side of the pair.
+      const sent = pair.backgroundPort.onMessage.addListener.mock.calls
+        ? pair.popupPort.postMessage.mock.calls[0][0]
+        : null;
+      expect(sent).toEqual({
+        action: "start",
+        requests: [
+          { domain: "example.com", store: "a" },
+          { domain: "example.com", store: "b" },
+        ],
+      });
+      await driveStreamReplies(api, [
+        { type: "result", index: 0, response: { results: [] } },
+        { type: "result", index: 1, response: { results: [] } },
+      ]);
+      await queryDone;
+    });
+
+    it("merges results across stores and sorts the union by score", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }, { name: "b" }];
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      await driveStreamReplies(api, [
+        {
+          type: "result",
+          index: 0,
+          response: {
+            results: [{ name: "low", store: "a", match_kind: "name", score: 0.5 }],
+          },
+        },
+        {
+          type: "result",
+          index: 1,
+          response: {
             results: [
               { name: "high", store: "b", match_kind: "url_field", score: 1 },
             ],
           },
-        ],
-      });
-      await popup.runQuery();
-      const sent = api.runtime.sendMessage.mock.calls.at(-1)[0];
-      expect(sent.type).toBe("query_multi");
-      expect(sent.requests).toEqual([
-        { domain: "example.com", store: "a" },
-        { domain: "example.com", store: "b" },
+        },
       ]);
+      await queryDone;
       const names = Array.from(
         popup.elements.results.querySelectorAll(".name"),
       ).map((n) => n.textContent);
       expect(names).toEqual(["high", "low"]);
     });
 
-    it("marks a per-store error response as skipped", async () => {
+    it("updates the status counter as each store replies and renders matches incrementally", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [
+        { name: "a" },
+        { name: "b" },
+        { name: "c" },
+      ];
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      // Initial state: 0/3 answered, no results rendered yet.
+      expect(popup.elements.status.textContent).toMatch(
+        /Searching for example\.com… \(0\/3 stores answered\)/,
+      );
+      expect(popup.elements.results.children.length).toBe(0);
+
+      // First store replies.
+      pushStreamReply(api, {
+        type: "result",
+        index: 0,
+        response: {
+          results: [{ name: "alpha-hit", match_kind: "name", score: 0.6 }],
+        },
+      });
+      await flushAsync();
+      expect(popup.elements.status.textContent).toMatch(
+        /\(1\/3 stores answered\)/,
+      );
+      expect(popup.elements.results.children.length).toBe(1);
+      expect(popup.elements.results.textContent).toMatch(/alpha-hit/);
+
+      // Second store replies — list grows AND re-sorts (this entry
+      // outranks alpha-hit).
+      pushStreamReply(api, {
+        type: "result",
+        index: 1,
+        response: {
+          results: [{ name: "beta-hit", match_kind: "name", score: 0.9 }],
+        },
+      });
+      await flushAsync();
+      expect(popup.elements.status.textContent).toMatch(
+        /\(2\/3 stores answered\)/,
+      );
+      const namesAfterTwo = Array.from(
+        popup.elements.results.querySelectorAll(".name"),
+      ).map((n) => n.textContent);
+      expect(namesAfterTwo).toEqual(["beta-hit", "alpha-hit"]);
+
+      // Third store replies with nothing — counter advances to 3/3,
+      // and the final status switches to the settled "N matches." copy.
+      pushStreamReply(api, {
+        type: "result",
+        index: 2,
+        response: { results: [] },
+      });
+      pushStreamReply(api, { type: "done" });
+      await queryDone;
+      expect(popup.elements.status.textContent).toBe("2 matches.");
+    });
+
+    it("marks a per-store error response as skipped and names it in the final status", async () => {
       const { api, popup } = await setUp();
       popup.state.domain = "example.com";
       popup.state.store = popup.ALL_STORES;
       popup.state.protocolOk = true;
       popup.state.stores = [{ name: "good" }, { name: "broken" }];
-      api.runtime.sendMessage.mockResolvedValueOnce({
-        ok: true,
-        responses: [
-          { results: [{ name: "x", match_kind: "name", score: 0.5 }] },
-          { error: "identity_locked", hint: "touch your key" },
-        ],
-      });
-      await popup.runQuery();
-      expect(popup.elements.status.textContent).toMatch(/1 store\(s\) skipped/);
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      await driveStreamReplies(api, [
+        {
+          type: "result",
+          index: 0,
+          response: {
+            results: [{ name: "x", match_kind: "name", score: 0.5 }],
+          },
+        },
+        {
+          type: "result",
+          index: 1,
+          response: { error: "identity_locked", hint: "touch your key" },
+        },
+      ]);
+      await queryDone;
+      expect(popup.elements.status.textContent).toMatch(
+        /1 match.*1 store\(s\) skipped: broken/,
+      );
     });
 
     it("marks a per-store non-array results field as skipped", async () => {
@@ -1798,81 +1951,294 @@ describe("popup.js", () => {
       popup.state.store = popup.ALL_STORES;
       popup.state.protocolOk = true;
       popup.state.stores = [{ name: "a" }];
-      api.runtime.sendMessage.mockResolvedValueOnce({
-        ok: true,
-        responses: [{ results: "broken" }],
-      });
-      await popup.runQuery();
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      await driveStreamReplies(api, [
+        { type: "result", index: 0, response: { results: "broken" } },
+      ]);
+      await queryDone;
       expect(popup.elements.status.textContent).toMatch(/1 store\(s\) skipped/);
     });
 
-    it("marks an undefined slot in the responses array as skipped (defensive)", async () => {
+    it("marks every store skipped when the background closes the stream before answering any slot", async () => {
       const { api, popup } = await setUp();
       popup.state.domain = "example.com";
       popup.state.store = popup.ALL_STORES;
       popup.state.protocolOk = true;
       popup.state.stores = [{ name: "a" }, { name: "b" }];
-      api.runtime.sendMessage.mockResolvedValueOnce({
-        ok: true,
-        responses: [{ results: [{ name: "x", match_kind: "name", score: 0.5 }] }],
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      // Simulate the background tearing the stream port down without
+      // any `result` messages — e.g. a `connectNative` failure.
+      const pair = api.__streamPairs.at(-1);
+      pair.backgroundPort.disconnect();
+      await queryDone;
+      expect(popup.elements.status.textContent).toMatch(/2 store\(s\) skipped/);
+    });
+
+    it("marks every store skipped when the background emits a top-level `error` message", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }];
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      // Top-level error: native messaging itself failed before any
+      // per-slot reply was possible.
+      const pair = api.__streamPairs.at(-1);
+      pair.backgroundPort.postMessage({
+        type: "error",
+        error: "native messaging disabled",
       });
-      await popup.runQuery();
-      // Slot 1 was undefined → store "b" skipped.
+      await queryDone;
       expect(popup.elements.status.textContent).toMatch(/1 store\(s\) skipped/);
     });
 
-    it("marks every store skipped when the background rejects the batch", async () => {
+    it("marks every store skipped when api.runtime.connect throws synchronously", async () => {
       const { api, popup } = await setUp();
       popup.state.domain = "example.com";
       popup.state.store = popup.ALL_STORES;
       popup.state.protocolOk = true;
       popup.state.stores = [{ name: "a" }, { name: "b" }];
-      api.runtime.sendMessage.mockRejectedValueOnce(new Error("native gone"));
+      api.runtime.connect = vi.fn(() => {
+        throw new Error("ports are unavailable here");
+      });
       await popup.runQuery();
       expect(popup.elements.status.textContent).toMatch(/2 store\(s\) skipped/);
     });
 
-    it("marks every store skipped when the background returns ok=false", async () => {
+    it("marks every store skipped when api.runtime.connect returns a falsy value", async () => {
       const { api, popup } = await setUp();
       popup.state.domain = "example.com";
       popup.state.store = popup.ALL_STORES;
       popup.state.protocolOk = true;
       popup.state.stores = [{ name: "a" }];
-      api.runtime.sendMessage.mockResolvedValueOnce({
-        ok: false,
-        error: "native messaging port could not be opened",
-      });
+      api.runtime.connect = vi.fn(() => null);
       await popup.runQuery();
       expect(popup.elements.status.textContent).toMatch(/1 store\(s\) skipped/);
     });
 
-    it("marks every store skipped when the background returns a non-array responses field", async () => {
-      const { api, popup } = await setUp();
-      popup.state.domain = "example.com";
-      popup.state.store = popup.ALL_STORES;
-      popup.state.protocolOk = true;
-      popup.state.stores = [{ name: "a" }];
-      api.runtime.sendMessage.mockResolvedValueOnce({
-        ok: true,
-        responses: "broken",
-      });
-      await popup.runQuery();
-      expect(popup.elements.status.textContent).toMatch(/1 store\(s\) skipped/);
-    });
-
-    it("routes multi-store queries through exactly one query_multi (no per-port fan-out path exists)", async () => {
+    it("marks every still-pending slot skipped when postMessage(start) throws", async () => {
       const { api, popup } = await setUp();
       popup.state.domain = "example.com";
       popup.state.store = popup.ALL_STORES;
       popup.state.protocolOk = true;
       popup.state.stores = [{ name: "a" }, { name: "b" }];
-      api.runtime.sendMessage.mockResolvedValueOnce({
-        ok: true,
-        responses: [{ results: [] }, { results: [] }],
+      api.runtime.connect = vi.fn(() => {
+        const port = {
+          name: "query_multi_stream",
+          onMessage: { addListener: vi.fn() },
+          onDisconnect: { addListener: vi.fn() },
+          postMessage: vi.fn(() => {
+            throw new Error("port write failed");
+          }),
+          disconnect: vi.fn(),
+        };
+        api.__streamPairs.push({ popupPort: port, backgroundPort: port });
+        return port;
       });
       await popup.runQuery();
-      const types = api.runtime.sendMessage.mock.calls.map((c) => c[0].type);
-      expect(types).toEqual(["query_multi"]);
+      expect(popup.elements.status.textContent).toMatch(/2 store\(s\) skipped/);
+    });
+
+    it("dispatches a faster store's results before the slower store has replied — the slow store no longer gates the user-visible latency (J)", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "slow" }, { name: "fast" }];
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      // Fast store answers first, slow store hasn't replied yet — the
+      // UI must already show the fast results AND the progress counter
+      // must reflect 1-of-2 answered, before slow finishes.
+      pushStreamReply(api, {
+        type: "result",
+        index: 1,
+        response: {
+          results: [{ name: "fast-hit", match_kind: "name", score: 0.8 }],
+        },
+      });
+      await flushAsync();
+      expect(popup.elements.results.children.length).toBe(1);
+      expect(popup.elements.results.textContent).toMatch(/fast-hit/);
+      expect(popup.elements.status.textContent).toMatch(/\(1\/2 stores answered\)/);
+      // Now slow finishes — its match joins the list, and the status
+      // settles.
+      pushStreamReply(api, {
+        type: "result",
+        index: 0,
+        response: {
+          results: [{ name: "slow-hit", match_kind: "name", score: 0.6 }],
+        },
+      });
+      pushStreamReply(api, { type: "done" });
+      await queryDone;
+      const names = Array.from(
+        popup.elements.results.querySelectorAll(".name"),
+      ).map((n) => n.textContent);
+      expect(names).toEqual(["fast-hit", "slow-hit"]);
+    });
+
+    it("ignores result messages whose `index` is not an integer (defensive)", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }];
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      // Garbage index — must be silently dropped, must not crash.
+      pushStreamReply(api, {
+        type: "result",
+        index: "abc",
+        response: { results: [{ name: "ignored", match_kind: "name" }] },
+      });
+      // Then the real result for index 0.
+      pushStreamReply(api, {
+        type: "result",
+        index: 0,
+        response: { results: [{ name: "real", match_kind: "name", score: 0.5 }] },
+      });
+      pushStreamReply(api, { type: "done" });
+      await queryDone;
+      const names = Array.from(
+        popup.elements.results.querySelectorAll(".name"),
+      ).map((n) => n.textContent);
+      expect(names).toEqual(["real"]);
+    });
+
+    it("ignores a duplicate result for an already-settled slot (defensive)", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }];
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      pushStreamReply(api, {
+        type: "result",
+        index: 0,
+        response: { results: [{ name: "first", match_kind: "name", score: 0.5 }] },
+      });
+      pushStreamReply(api, {
+        type: "result",
+        index: 0,
+        response: { results: [{ name: "second", match_kind: "name", score: 0.9 }] },
+      });
+      pushStreamReply(api, { type: "done" });
+      await queryDone;
+      const names = Array.from(
+        popup.elements.results.querySelectorAll(".name"),
+      ).map((n) => n.textContent);
+      // Only the first result lands; the duplicate is dropped so a
+      // misbehaving host can't re-render the same slot.
+      expect(names).toEqual(["first"]);
+    });
+
+    it("tolerates port.disconnect throwing after the stream completes", async () => {
+      // The popup's safeDisconnect wraps disconnect in a try/catch
+      // so a port that has already been torn down by the background
+      // doesn't crash the popup. Drive that branch by handing the
+      // popup a port whose `disconnect` throws.
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }];
+      let messageListener;
+      api.runtime.connect = vi.fn(() => {
+        const port = {
+          name: "query_multi_stream",
+          onMessage: {
+            addListener: vi.fn((l) => {
+              messageListener = l;
+            }),
+          },
+          onDisconnect: { addListener: vi.fn() },
+          postMessage: vi.fn(),
+          disconnect: vi.fn(() => {
+            throw new Error("port is already closed");
+          }),
+        };
+        api.__streamPairs.push({ popupPort: port, backgroundPort: port });
+        return port;
+      });
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      // The popup has installed an onMessage listener on the stubbed
+      // port. Push a real result followed by `done` — the popup's
+      // `done` path calls `port.disconnect()` which throws. The
+      // throw must not propagate.
+      messageListener({
+        type: "result",
+        index: 0,
+        response: {
+          results: [{ name: "x", match_kind: "name", score: 0.5 }],
+        },
+      });
+      messageListener({ type: "done" });
+      await queryDone;
+      expect(popup.elements.status.textContent).toMatch(/1 match/);
+    });
+
+    it("falls back to a `store#N` placeholder when the stream emits an out-of-bounds index (defensive)", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }];
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      // index 7 is past the end of state.stores. The popup's
+      // `state.stores[index]?.name ?? "store#" + index` fallback
+      // produces a synthesized name rather than crashing on a null
+      // dereference, AND the slot still has to flow through `answered`
+      // accounting — otherwise the stream-end heuristic would mark
+      // the real store-0 as skipped a second time on disconnect.
+      pushStreamReply(api, {
+        type: "result",
+        index: 7,
+        response: { error: "identity_locked" },
+      });
+      // Real result for index 0 settles the legitimate slot.
+      pushStreamReply(api, {
+        type: "result",
+        index: 0,
+        response: { results: [{ name: "ok", match_kind: "name", score: 0.5 }] },
+      });
+      pushStreamReply(api, { type: "done" });
+      await queryDone;
+      // The skipped-store list includes the synthesized name.
+      expect(popup.elements.status.textContent).toMatch(/store#7/);
+    });
+
+    it("ignores stream messages that aren't well-formed objects", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }];
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      // Junk messages — must be silently dropped.
+      pushStreamReply(api, null);
+      pushStreamReply(api, "not an object");
+      pushStreamReply(api, 42);
+      pushStreamReply(api, { type: "unknown_kind", foo: "bar" });
+      // Real result lands afterwards.
+      pushStreamReply(api, {
+        type: "result",
+        index: 0,
+        response: { results: [{ name: "real", match_kind: "name", score: 0.5 }] },
+      });
+      pushStreamReply(api, { type: "done" });
+      await queryDone;
+      const names = Array.from(
+        popup.elements.results.querySelectorAll(".name"),
+      ).map((n) => n.textContent);
+      expect(names).toEqual(["real"]);
     });
   });
 

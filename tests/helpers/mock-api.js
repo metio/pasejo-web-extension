@@ -10,7 +10,13 @@ import { vi } from "vitest";
 // can step the event loop deterministically.
 export function makeApiMock() {
   const onMessageListeners = [];
+  const onConnectListeners = [];
   const ports = [];
+  // Pairs created by `runtime.connect`: each entry holds the popup-
+  // side port and the background-side port so a test can drive either
+  // end (`__streamPairs.at(-1).popupPort.__emitMessage(...)` or
+  // `.backgroundPort.postMessage(...)`).
+  const streamPairs = [];
   return {
     runtime: {
       // Captured so tests can invoke the registered listener directly.
@@ -18,11 +24,27 @@ export function makeApiMock() {
         addListener: vi.fn((listener) => onMessageListeners.push(listener)),
         listeners: onMessageListeners,
       },
+      onConnect: {
+        addListener: vi.fn((listener) => onConnectListeners.push(listener)),
+        listeners: onConnectListeners,
+      },
       sendMessage: vi.fn(),
       connectNative: vi.fn((name) => {
         const port = makePortMock(name);
         ports.push(port);
         return port;
+      }),
+      // Popup-side counterpart to `connectNative`: opens a paired port
+      // and synchronously fires every registered `onConnect` listener
+      // with the background-facing half. The returned port is the
+      // popup-facing half.
+      connect: vi.fn((options = {}) => {
+        const pair = makePortPair(options.name);
+        streamPairs.push(pair);
+        for (const listener of onConnectListeners) {
+          listener(pair.backgroundPort);
+        }
+        return pair.popupPort;
       }),
       lastError: undefined,
     },
@@ -43,6 +65,8 @@ export function makeApiMock() {
     // Inspection helpers (not on the real API surface).
     __ports: ports,
     __onMessageListeners: onMessageListeners,
+    __onConnectListeners: onConnectListeners,
+    __streamPairs: streamPairs,
   };
 }
 
@@ -72,6 +96,66 @@ export function makePortMock(name = "wtf.metio.pasejo") {
       }
     },
   };
+}
+
+// Returns the popup-facing and background-facing halves of a paired
+// extension port. `postMessage` on one delivers to the other's
+// `onMessage` listeners; `disconnect` on either side fires the
+// other's `onDisconnect` listeners. Mirrors the real
+// `runtime.connect` contract closely enough for the streaming
+// query path to be testable end-to-end.
+function makePortPair(name = "") {
+  const popupListeners = { message: [], disconnect: [] };
+  const backgroundListeners = { message: [], disconnect: [] };
+  let disconnected = false;
+
+  const makeSide = (mineListeners, peerListeners, peer) => ({
+    name,
+    onMessage: {
+      addListener: vi.fn((l) => mineListeners.message.push(l)),
+    },
+    onDisconnect: {
+      addListener: vi.fn((l) => mineListeners.disconnect.push(l)),
+    },
+    postMessage: vi.fn((message) => {
+      if (disconnected) {
+        return;
+      }
+      for (const l of peerListeners.message) {
+        l(message);
+      }
+    }),
+    disconnect: vi.fn(() => {
+      if (disconnected) {
+        return;
+      }
+      disconnected = true;
+      for (const l of peerListeners.disconnect) {
+        l(peer);
+      }
+    }),
+    // Test-only emitters mirror the native-port mock's API surface
+    // so tests can synthesise messages or disconnects without going
+    // through the paired side.
+    __emitMessage(message) {
+      for (const l of mineListeners.message) {
+        l(message);
+      }
+    },
+    __emitDisconnect() {
+      if (disconnected) {
+        return;
+      }
+      disconnected = true;
+      for (const l of mineListeners.disconnect) {
+        l();
+      }
+    },
+  });
+
+  const popupPort = makeSide(popupListeners, backgroundListeners, null);
+  const backgroundPort = makeSide(backgroundListeners, popupListeners, null);
+  return { popupPort, backgroundPort };
 }
 
 // Convenience: invokes the listener that `background.js` registered
