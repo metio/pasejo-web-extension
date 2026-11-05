@@ -49,6 +49,13 @@ const EXPOSED = [
   "createFrameCollector",
   "orderFramesForFill",
   "requestFill",
+  "isSamePage",
+  "originOf",
+  "senderOrigin",
+  "originHostname",
+  "storedUrlHostname",
+  "frameMatchesCredential",
+  "hostMatchesSecret",
   "FRAME_HANDSHAKE_TIMEOUT_MS",
   "FRAME_FILL_TIMEOUT_MS",
   "main",
@@ -103,6 +110,15 @@ function deferred() {
   });
   return { promise, resolve, reject };
 }
+
+// The page `setUp`'s default tab shows, as `main()` records it.
+const PAGE = Object.freeze({
+  tabId: 7,
+  origin: "https://example.com",
+  hostname: "example.com",
+});
+
+const allowAll = async () => true;
 
 // Stands in for `scripting.executeScript`: every entry in `frames`
 // "runs" fill.js — opens a pasejo-frame port carrying the sender the
@@ -187,6 +203,7 @@ async function setUp({
   popup.elements.results.replaceChildren();
   popup.elements.store.replaceChildren();
   popup.state.domain = null;
+  popup.state.page = { ...PAGE };
   popup.state.store = null;
   popup.state.stores = [];
   popup.state.protocolOk = false;
@@ -510,7 +527,7 @@ describe("popup.js", () => {
       await expect(popup.loadActiveTab()).resolves.toBeNull();
     });
 
-    it("returns { id, hostname } for a normal page", async () => {
+    it("returns { id, hostname, origin } for a normal page", async () => {
       const { api, popup } = await setUp();
       api.tabs.query.mockResolvedValueOnce([
         { id: 9, url: "https://demo.test/login" },
@@ -518,6 +535,7 @@ describe("popup.js", () => {
       await expect(popup.loadActiveTab()).resolves.toEqual({
         id: 9,
         hostname: "demo.test",
+        origin: "https://demo.test",
       });
     });
   });
@@ -2976,7 +2994,7 @@ describe("popup.js", () => {
         { frameId: 1, fill: { ok: true, filled: { username: true, password: true } } },
         { frameId: 2, fill: { ok: true } },
       ]);
-      const reply = await popup.fillAcrossFrames(7, { type: "fill" });
+      const reply = await popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
       expect(reply.ok).toBe(true);
       // Stops at the first ok=true (frame 1); frame 2 is not tried.
       expect(filled).toEqual([0, 1]);
@@ -2988,7 +3006,7 @@ describe("popup.js", () => {
         { frameId: 0, fill: "disconnect" },
         { frameId: 1, fill: { ok: true } },
       ]);
-      const reply = await popup.fillAcrossFrames(7, { type: "fill" });
+      const reply = await popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
       expect(reply.ok).toBe(true);
       expect(filled).toEqual([0, 1]);
     });
@@ -2996,7 +3014,7 @@ describe("popup.js", () => {
     it("returns { ok: false } when no frame reports success", async () => {
       const { api, popup } = await setUp();
       stubFrames(api, [{ frameId: 0, fill: { ok: false } }]);
-      const reply = await popup.fillAcrossFrames(7, { type: "fill" });
+      const reply = await popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
       expect(reply.ok).toBe(false);
     });
 
@@ -3006,7 +3024,7 @@ describe("popup.js", () => {
         .fn()
         .mockRejectedValue(new Error("Cannot access a chrome:// URL"));
       await expect(
-        popup.fillAcrossFrames(7, { type: "fill" }),
+        popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll),
       ).resolves.toEqual({ ok: false, noAccess: true });
     });
 
@@ -3016,7 +3034,7 @@ describe("popup.js", () => {
         { frameId: 0, fill: { ok: true } },
         { frameId: 1, editableFocused: true, fill: { ok: true } },
       ]);
-      await popup.fillAcrossFrames(7, { type: "fill" });
+      await popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
       expect(filled).toEqual([1]);
     });
 
@@ -3026,7 +3044,7 @@ describe("popup.js", () => {
         { frameId: 0, focused: true, fill: { ok: false } },
         { frameId: 1, fill: { ok: true } },
       ]);
-      await popup.fillAcrossFrames(7, { type: "fill" });
+      await popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
       expect(filled).toEqual([0, 1]);
     });
 
@@ -3036,16 +3054,16 @@ describe("popup.js", () => {
       const filled = stubFrames(api, [
         { frameId: 0, ready: false, fill: { ok: true } },
       ]);
-      const reply = popup.fillAcrossFrames(7, { type: "fill" });
+      const reply = popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
       await vi.advanceTimersByTimeAsync(popup.FRAME_HANDSHAKE_TIMEOUT_MS);
-      await expect(reply).resolves.toEqual({ ok: false });
+      await expect(reply).resolves.toEqual({ ok: false, refused: 0 });
       expect(filled).toEqual([]);
     });
 
     it("closes every frame port and stops collecting once done", async () => {
       const { api, popup } = await setUp();
       stubFrames(api, [{ frameId: 0, fill: { ok: true } }]);
-      await popup.fillAcrossFrames(7, { type: "fill" });
+      await popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
       const framePair = api.__streamPairs.at(-1);
       expect(framePair.backgroundPort.disconnect).toHaveBeenCalled();
       // A late port is refused now that no fill is collecting.
@@ -3060,8 +3078,8 @@ describe("popup.js", () => {
         .fn()
         .mockReturnValueOnce(first.promise)
         .mockResolvedValueOnce([]);
-      const older = popup.fillAcrossFrames(7, { type: "fill" });
-      const newer = popup.fillAcrossFrames(7, { type: "fill" });
+      const older = popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
+      const newer = popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
       await newer;
       first.resolve([]);
       await older;
@@ -3090,7 +3108,7 @@ describe("popup.js", () => {
     it("renders the partial-fill message when only username was filled", async () => {
       const { api, popup } = await setUp();
       api.tabs.query.mockResolvedValueOnce([
-        { id: 1, url: "https://x.test" },
+        { id: 7, url: "https://example.com/login" },
       ]);
       stubFrames(api, [{ frameId: 0, fill: { ok: true, filled: { username: true, password: false } } }]);
       await popup.fillIntoActiveTab({ name: "alice", username: "alice" });
@@ -3103,7 +3121,7 @@ describe("popup.js", () => {
     it("renders the full-fill success message", async () => {
       const { api, popup } = await setUp();
       api.tabs.query.mockResolvedValueOnce([
-        { id: 1, url: "https://x.test" },
+        { id: 7, url: "https://example.com/login" },
       ]);
       stubFrames(api, [{ frameId: 0, fill: { ok: true, filled: { username: true, password: true } } }]);
       await popup.fillIntoActiveTab({
@@ -3117,7 +3135,7 @@ describe("popup.js", () => {
     it("notes the one-time code in the success message of a full fill", async () => {
       const { api, popup } = await setUp();
       api.tabs.query.mockResolvedValueOnce([
-        { id: 1, url: "https://x.test" },
+        { id: 7, url: "https://example.com/login" },
       ]);
       stubFrames(api, [{ frameId: 0, fill: { ok: true, filled: { username: true, password: true, otp: true } } }]);
       await popup.fillIntoActiveTab({
@@ -3134,7 +3152,7 @@ describe("popup.js", () => {
     it("notes the one-time code in the partial-fill (username-only) message", async () => {
       const { api, popup } = await setUp();
       api.tabs.query.mockResolvedValueOnce([
-        { id: 1, url: "https://x.test" },
+        { id: 7, url: "https://example.com/login" },
       ]);
       stubFrames(api, [{ frameId: 0, fill: {
             ok: true,
@@ -3154,7 +3172,7 @@ describe("popup.js", () => {
     it("reports a standalone 2FA fill (one-time code only)", async () => {
       const { api, popup } = await setUp();
       api.tabs.query.mockResolvedValueOnce([
-        { id: 1, url: "https://x.test" },
+        { id: 7, url: "https://example.com/login" },
       ]);
       stubFrames(api, [{ frameId: 0, fill: {
             ok: true,
@@ -3169,7 +3187,7 @@ describe("popup.js", () => {
     it("renders the generic 'no fillable input' error when every frame says ok:false", async () => {
       const { api, popup } = await setUp();
       api.tabs.query.mockResolvedValueOnce([
-        { id: 1, url: "https://x.test" },
+        { id: 7, url: "https://example.com/login" },
       ]);
       stubFrames(api, [{ frameId: 0, fill: { ok: false } }]);
       await popup.fillIntoActiveTab({ name: "alice", username: "alice" });
@@ -3180,7 +3198,7 @@ describe("popup.js", () => {
     it("explains that the browser keeps the extension off the page when injection is refused", async () => {
       const { api, popup } = await setUp();
       api.tabs.query.mockResolvedValueOnce([
-        { id: 1, url: "https://x.test" },
+        { id: 7, url: "https://example.com/login" },
       ]);
       api.scripting.executeScript = vi
         .fn()
@@ -3191,6 +3209,353 @@ describe("popup.js", () => {
       );
       expect(popup.elements.status.classList.contains("error")).toBe(true);
       expect(popup.state.filling).toBe(false);
+    });
+  });
+
+  describe("page and frame origins", () => {
+    it("originOf returns the URL's origin, or \"null\" when it has none", async () => {
+      const { popup } = await setUp();
+      expect(popup.originOf("https://Example.com:8443/a?b#c")).toBe(
+        "https://example.com:8443",
+      );
+      expect(popup.originOf("not a url")).toBe("null");
+      expect(popup.originOf(undefined)).toBe("null");
+    });
+
+    it("isSamePage needs the recorded tab id and origin", async () => {
+      const { popup } = await setUp();
+      const page = { tabId: 7, origin: "https://example.com" };
+      expect(
+        popup.isSamePage(page, { id: 7, origin: "https://example.com" }),
+      ).toBe(true);
+      expect(
+        popup.isSamePage(page, { id: 8, origin: "https://example.com" }),
+      ).toBe(false);
+      expect(
+        popup.isSamePage(page, { id: 7, origin: "https://evil.test" }),
+      ).toBe(false);
+      expect(
+        popup.isSamePage(page, { id: 7, origin: "http://example.com" }),
+      ).toBe(false);
+      expect(popup.isSamePage(null, { id: 7, origin: "null" })).toBe(false);
+      expect(
+        popup.isSamePage({ tabId: 7, origin: "null" }, { id: 7, origin: "null" }),
+      ).toBe(false);
+    });
+
+    it("senderOrigin prefers the browser's sender.origin over sender.url", async () => {
+      const { popup } = await setUp();
+      expect(
+        popup.senderOrigin({
+          origin: "https://example.com",
+          url: "about:blank",
+        }),
+      ).toBe("https://example.com");
+      expect(popup.senderOrigin({ url: "https://sso.example.com/x" })).toBe(
+        "https://sso.example.com",
+      );
+      expect(popup.senderOrigin({ url: "about:srcdoc" })).toBe("null");
+    });
+
+    it("originHostname accepts only http(s) origins", async () => {
+      const { popup } = await setUp();
+      expect(popup.originHostname("https://Login.Example.com")).toBe(
+        "login.example.com",
+      );
+      expect(popup.originHostname("http://[::1]:8080")).toBe("::1");
+      expect(popup.originHostname("null")).toBeNull();
+      expect(popup.originHostname("chrome-extension://abc")).toBeNull();
+    });
+
+    it("storedUrlHostname reads a URL field the way the host does", async () => {
+      const { popup } = await setUp();
+      expect(popup.storedUrlHostname("https://login.example.com/x")).toBe(
+        "login.example.com",
+      );
+      expect(popup.storedUrlHostname("  login.example.com/path")).toBe(
+        "login.example.com",
+      );
+      expect(popup.storedUrlHostname(undefined)).toBeNull();
+      expect(popup.storedUrlHostname("http://")).toBeNull();
+    });
+  });
+
+  describe("frameMatchesCredential", () => {
+    const match = Object.freeze({
+      name: "example.com/alice",
+      store: "personal",
+      url: "https://example.com/login",
+    });
+
+    function hostReplies(api, resultsByDomain) {
+      api.runtime.sendMessage = vi.fn(async (message) => ({
+        ok: true,
+        response: { results: resultsByDomain[message.domain] ?? [] },
+      }));
+    }
+
+    it("allows the page's own host without asking the host", async () => {
+      const { api, popup } = await setUp();
+      const allowed = await popup.frameMatchesCredential(
+        { origin: "https://example.com" },
+        match,
+        PAGE,
+        new Map(),
+      );
+      expect(allowed).toBe(true);
+      expect(api.runtime.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("allows the exact host of the secret's stored URL without asking the host", async () => {
+      const { api, popup } = await setUp();
+      const allowed = await popup.frameMatchesCredential(
+        { origin: "https://login.example.com" },
+        { ...match, url: "https://login.example.com/sso" },
+        PAGE,
+        new Map(),
+      );
+      expect(allowed).toBe(true);
+      expect(api.runtime.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("refuses an opaque or non-http(s) frame origin", async () => {
+      const { api, popup } = await setUp();
+      for (const origin of ["null", "file://", "data:text/html,x"]) {
+        expect(
+          await popup.frameMatchesCredential({ origin }, match, PAGE, new Map()),
+        ).toBe(false);
+      }
+      expect(api.runtime.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("allows another host when the host returns the same secret for it", async () => {
+      const { api, popup } = await setUp();
+      hostReplies(api, {
+        "sso.example.com": [
+          { name: "example.com/alice", store: "personal", score: 0.9 },
+        ],
+      });
+      const allowed = await popup.frameMatchesCredential(
+        { origin: "https://sso.example.com" },
+        match,
+        PAGE,
+        new Map(),
+      );
+      expect(allowed).toBe(true);
+      expect(api.runtime.sendMessage).toHaveBeenCalledWith({
+        type: "query",
+        domain: "sso.example.com",
+        store: "personal",
+      });
+    });
+
+    it("refuses another host when the host returns a different secret or store", async () => {
+      const { api, popup } = await setUp();
+      hostReplies(api, {
+        "evil.test": [
+          { name: "evil.test/alice", store: "personal" },
+          { name: "example.com/alice", store: "work" },
+          null,
+        ],
+      });
+      const allowed = await popup.frameMatchesCredential(
+        { origin: "https://evil.test" },
+        match,
+        PAGE,
+        new Map(),
+      );
+      expect(allowed).toBe(false);
+    });
+
+    it("refuses another host when the host query fails or replies with an error", async () => {
+      const { api, popup } = await setUp();
+      api.runtime.sendMessage = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("host down"))
+        .mockResolvedValueOnce({
+          ok: true,
+          response: { error: "identity_locked" },
+        });
+      expect(
+        await popup.frameMatchesCredential(
+          { origin: "https://a.test" },
+          match,
+          PAGE,
+          new Map(),
+        ),
+      ).toBe(false);
+      expect(
+        await popup.frameMatchesCredential(
+          { origin: "https://b.test" },
+          { ...match, store: undefined },
+          PAGE,
+          new Map(),
+        ),
+      ).toBe(false);
+      expect(api.runtime.sendMessage).toHaveBeenLastCalledWith({
+        type: "query",
+        domain: "b.test",
+        store: null,
+      });
+    });
+
+    it("asks the host once per frame host within one fill", async () => {
+      const { api, popup } = await setUp();
+      hostReplies(api, {});
+      const lookups = new Map();
+      for (let i = 0; i < 3; i += 1) {
+        await popup.frameMatchesCredential(
+          { origin: "https://ads.test" },
+          match,
+          PAGE,
+          lookups,
+        );
+      }
+      expect(api.runtime.sendMessage).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("fill delivery to frames of other sites", () => {
+    const match = Object.freeze({
+      name: "example.com/alice",
+      store: "personal",
+      username: "alice",
+      password: "hunter2",
+      url: "https://example.com/login",
+    });
+
+    it("never sends the credential to a cross-origin iframe the secret does not match, on a legitimate page", async () => {
+      const { api, popup } = await setUp();
+      api.runtime.sendMessage = vi.fn(async () => ({
+        ok: true,
+        response: { results: [] },
+      }));
+      // The legitimate top frame has no login form; an embedded frame
+      // from another site does, and would happily take a password.
+      const filled = stubFrames(api, [
+        { frameId: 0, url: "https://example.com/login", fill: { ok: false } },
+        {
+          frameId: 1,
+          url: "https://evil.test/frame",
+          editableFocused: true,
+          fill: { ok: true, filled: { username: true, password: true } },
+        },
+      ]);
+      await popup.fillIntoActiveTab(match);
+      expect(filled).toEqual([0]);
+      expect(api.runtime.sendMessage).toHaveBeenCalledWith({
+        type: "query",
+        domain: "evil.test",
+        store: "personal",
+      });
+      expect(popup.elements.status.textContent).toBe(
+        "Nothing filled. Frames from sites that example.com/alice does not match were skipped.",
+      );
+      expect(popup.state.filling).toBe(false);
+    });
+
+    it("judges a frame by its browser-reported origin, not its URL", async () => {
+      const { api, popup } = await setUp();
+      api.runtime.sendMessage = vi.fn(async () => ({
+        ok: true,
+        response: { results: [] },
+      }));
+      // An about:blank frame the attacker origin created reports its
+      // inherited origin, which is what counts.
+      const filled = stubFrames(api, [
+        {
+          frameId: 0,
+          url: "https://example.com/login",
+          origin: "https://example.com",
+          fill: { ok: false },
+        },
+        {
+          frameId: 4,
+          url: "about:blank",
+          origin: "https://evil.test",
+          fill: { ok: true },
+        },
+      ]);
+      await popup.fillIntoActiveTab(match);
+      expect(filled).toEqual([0]);
+    });
+
+    it("fills a same-site SSO iframe the host confirms for the secret", async () => {
+      const { api, popup } = await setUp();
+      api.runtime.sendMessage = vi.fn(async () => ({
+        ok: true,
+        response: {
+          results: [{ name: "example.com/alice", store: "personal" }],
+        },
+      }));
+      const filled = stubFrames(api, [
+        { frameId: 0, url: "https://example.com/login", fill: { ok: false } },
+        {
+          frameId: 2,
+          url: "https://sso.example.com/frame",
+          fill: { ok: true, filled: { username: true, password: true } },
+        },
+      ]);
+      await popup.fillIntoActiveTab(match);
+      expect(filled).toEqual([0, 2]);
+      expect(popup.elements.status.textContent).toBe(
+        "Filled example.com/alice.",
+      );
+    });
+
+    it("refuses to fill when the tab navigated to another origin between popup open and fill", async () => {
+      const { api, popup } = await setUp();
+      api.tabs.query.mockResolvedValueOnce([
+        { id: 7, url: "https://evil.test/login" },
+      ]);
+      const filled = stubFrames(api, [
+        { frameId: 0, url: "https://evil.test/login", fill: { ok: true } },
+      ]);
+      await popup.fillIntoActiveTab(match);
+      expect(api.scripting.executeScript).not.toHaveBeenCalled();
+      expect(filled).toEqual([]);
+      expect(popup.elements.status.textContent).toMatch(/The page changed/);
+      expect(popup.state.filling).toBe(false);
+    });
+
+    it("refuses to fill when the user switched to another tab", async () => {
+      const { api, popup } = await setUp();
+      api.tabs.query.mockResolvedValueOnce([
+        { id: 8, url: "https://example.com/login" },
+      ]);
+      await popup.fillIntoActiveTab(match);
+      expect(api.scripting.executeScript).not.toHaveBeenCalled();
+      expect(popup.elements.status.textContent).toMatch(/The page changed/);
+    });
+
+    it("refuses to fill when the top frame navigated after the tab check", async () => {
+      const { api, popup } = await setUp();
+      // The tab still reported example.com, but by the time the fill
+      // script ran the top document was on another origin.
+      const filled = stubFrames(api, [
+        { frameId: 0, url: "https://evil.test/login", fill: { ok: true } },
+        { frameId: 1, url: "https://example.com/frame", fill: { ok: true } },
+      ]);
+      await popup.fillIntoActiveTab(match);
+      expect(filled).toEqual([]);
+      expect(popup.elements.status.textContent).toMatch(/The page changed/);
+      expect(popup.state.filling).toBe(false);
+    });
+
+    it("still fills when the tab moved to another path on the same origin", async () => {
+      const { api, popup } = await setUp();
+      api.tabs.query.mockResolvedValueOnce([
+        { id: 7, url: "https://example.com/login/step-2" },
+      ]);
+      const filled = stubFrames(api, [
+        {
+          frameId: 0,
+          url: "https://example.com/login/step-2",
+          fill: { ok: true, filled: { username: true, password: true } },
+        },
+      ]);
+      await popup.fillIntoActiveTab(match);
+      expect(filled).toEqual([0]);
     });
   });
 

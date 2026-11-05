@@ -201,6 +201,15 @@
     "message": "pasejo はこのページに入力できません。ブラウザーは自身の設定画面やアドオンストアなど、一部のページで拡張機能の動作を禁止しています。",
     "description": "Shown when the browser does not let the extension run on the active page."
   },
+  "statusPageChanged": {
+    "message": "pasejo を開いた後にページが変わりました。入力するには、このページで pasejo を開き直してください。",
+    "description": "Shown when the active tab switched or navigated to another origin after the popup opened."
+  },
+  "statusFillRefusedOtherSite": {
+    "message": "何も入力されませんでした。$NAME$ に一致しないサイトのフレームはスキップされました。",
+    "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
   "errorUnknownStore": {
     "message": "選択したストアは pasejo の設定に存在しません。",
     "description": "Host error: the requested store is not configured."

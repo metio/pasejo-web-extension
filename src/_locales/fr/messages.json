@@ -201,6 +201,15 @@
     "message": "pasejo ne peut pas remplir cette page. Les navigateurs interdisent aux extensions certaines pages, comme leurs propres paramètres et leurs boutiques de modules.",
     "description": "Shown when the browser does not let the extension run on the active page."
   },
+  "statusPageChanged": {
+    "message": "La page a changé depuis l'ouverture de pasejo. Rouvrez pasejo sur cette page pour la remplir.",
+    "description": "Shown when the active tab switched or navigated to another origin after the popup opened."
+  },
+  "statusFillRefusedOtherSite": {
+    "message": "Rien n'a été rempli. Les cadres de sites auxquels $NAME$ ne correspond pas ont été ignorés.",
+    "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
   "errorUnknownStore": {
     "message": "Le coffre sélectionné n'existe pas dans votre configuration pasejo.",
     "description": "Host error: the requested store is not configured."

@@ -201,6 +201,15 @@
     "message": "pasejo cannot fill this page. Browsers keep extensions off some pages, such as their own settings and add-on stores.",
     "description": "Shown when the browser does not let the extension run on the active page."
   },
+  "statusPageChanged": {
+    "message": "The page changed since pasejo opened. Reopen pasejo on this page to fill it.",
+    "description": "Shown when the active tab switched or navigated to another origin after the popup opened."
+  },
+  "statusFillRefusedOtherSite": {
+    "message": "Nothing filled. Frames from sites that $NAME$ does not match were skipped.",
+    "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
   "errorUnknownStore": {
     "message": "The selected store does not exist in your pasejo configuration.",
     "description": "Host error: the requested store is not configured."

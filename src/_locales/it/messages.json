@@ -201,6 +201,15 @@
     "message": "pasejo non può compilare questa pagina. I browser escludono le estensioni da alcune pagine, come le proprie impostazioni e i negozi di componenti aggiuntivi.",
     "description": "Shown when the browser does not let the extension run on the active page."
   },
+  "statusPageChanged": {
+    "message": "La pagina è cambiata da quando pasejo è stato aperto. Riapri pasejo su questa pagina per compilarla.",
+    "description": "Shown when the active tab switched or navigated to another origin after the popup opened."
+  },
+  "statusFillRefusedOtherSite": {
+    "message": "Nulla è stato compilato. I frame di siti a cui $NAME$ non corrisponde sono stati saltati.",
+    "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
   "errorUnknownStore": {
     "message": "L'archivio selezionato non esiste nella tua configurazione di pasejo.",
     "description": "Host error: the requested store is not configured."

@@ -201,6 +201,15 @@
     "message": "pasejo kann auf dieser Seite nicht ausfüllen. Browser sperren Erweiterungen auf manchen Seiten, etwa ihren eigenen Einstellungen und Add-on-Stores.",
     "description": "Shown when the browser does not let the extension run on the active page."
   },
+  "statusPageChanged": {
+    "message": "Die Seite hat sich geändert, seit pasejo geöffnet wurde. Öffnen Sie pasejo auf dieser Seite erneut, um sie auszufüllen.",
+    "description": "Shown when the active tab switched or navigated to another origin after the popup opened."
+  },
+  "statusFillRefusedOtherSite": {
+    "message": "Nichts ausgefüllt. Frames von Seiten, zu denen $NAME$ nicht passt, wurden übersprungen.",
+    "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
   "errorUnknownStore": {
     "message": "Der ausgewählte Speicher existiert nicht in Ihrer pasejo-Konfiguration.",
     "description": "Host error: the requested store is not configured."

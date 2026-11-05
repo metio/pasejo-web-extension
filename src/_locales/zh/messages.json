@@ -201,6 +201,15 @@
     "message": "pasejo 无法填写此页面。浏览器禁止扩展在部分页面上运行，例如浏览器自身的设置页面和扩展商店。",
     "description": "Shown when the browser does not let the extension run on the active page."
   },
+  "statusPageChanged": {
+    "message": "打开 pasejo 后页面已发生变化。请在此页面上重新打开 pasejo 后再填写。",
+    "description": "Shown when the active tab switched or navigated to another origin after the popup opened."
+  },
+  "statusFillRefusedOtherSite": {
+    "message": "未填写任何内容。已跳过与 $NAME$ 不匹配的网站的框架。",
+    "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
   "errorUnknownStore": {
     "message": "所选存储在您的 pasejo 配置中不存在。",
     "description": "Host error: the requested store is not configured."

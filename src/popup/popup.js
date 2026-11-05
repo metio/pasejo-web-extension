@@ -29,6 +29,11 @@ const ALL_STORES = "__pasejo_all__";
 
 const state = {
   domain: null,
+  // The tab the popup was opened on and the origin it showed then:
+  // `{ tabId, origin, hostname }`. The results were matched against
+  // `hostname`, so a fill goes ahead only while the tab still shows
+  // `origin`.
+  page: null,
   store: null,
   stores: [],
   // Set true once `loadStores` has accepted a host's `protocol_version`.
@@ -156,12 +161,37 @@ function activeHostname(url) {
   }
 }
 
+// The origin of `url` as the URL parser computes it; "null" for opaque
+// origins (`about:`, `data:`, `file:`) and for input that does not parse.
+function originOf(url) {
+  try {
+    return new URL(url).origin;
+  } catch (_) {
+    return "null";
+  }
+}
+
 async function loadActiveTab() {
   const [tab] = await api.tabs.query({ active: true, currentWindow: true });
   if (!tab || !tab.url) {
     return null;
   }
-  return { id: tab.id, hostname: activeHostname(tab.url) };
+  return {
+    id: tab.id,
+    hostname: activeHostname(tab.url),
+    origin: originOf(tab.url),
+  };
+}
+
+// Whether `tab` is still the tab `page` recorded, showing the same
+// origin. An opaque origin never counts as the same page.
+function isSamePage(page, tab) {
+  return (
+    page !== null &&
+    page.origin !== "null" &&
+    tab.id === page.tabId &&
+    tab.origin === page.origin
+  );
 }
 
 async function loadStores() {
@@ -856,13 +886,18 @@ async function fillIntoActiveTab(match) {
     return;
   }
   state.filling = true;
-  // Re-query the active tab at fill time rather than reusing the id
-  // captured in `main()`: if the user opened the popup, switched tabs,
-  // and clicked Fill, the captured id would target the original tab.
-  // Re-querying makes Fill always act on whatever the user can see.
+  // The results were matched against the page the popup opened on.
+  // Re-query the active tab and refuse when the user has since switched
+  // tabs or the tab navigated to another origin: the credential was
+  // never matched against what the tab shows now.
   const tab = await loadActiveTab();
   if (!tab) {
     setStatus(t("statusNoActiveTab"), "error");
+    state.filling = false;
+    return;
+  }
+  if (!isSamePage(state.page, tab)) {
+    setStatus(t("statusPageChanged"), "error");
     state.filling = false;
     return;
   }
@@ -874,7 +909,10 @@ async function fillIntoActiveTab(match) {
     // missing/empty code as "nothing to fill".
     otp: match.otp,
   };
-  const reply = await fillAcrossFrames(tab.id, payload);
+  const lookups = new Map();
+  const reply = await fillAcrossFrames(state.page, payload, (frame) =>
+    frameMatchesCredential(frame, match, state.page, lookups),
+  );
   if (reply.ok) {
     // Partial fill: the matching frame had a username field but no
     // password field (typical multi-step login email page). Tell the
@@ -915,50 +953,70 @@ async function fillIntoActiveTab(match) {
     setTimeout(() => window.close(), partial ? 1500 : 600);
     return;
   }
-  setStatus(
-    t(reply.noAccess ? "statusNoPageAccess" : "statusNoFillablePassword"),
-    "error",
-  );
+  let failure = "statusNoFillablePassword";
+  if (reply.pageChanged) {
+    failure = "statusPageChanged";
+  } else if (reply.noAccess) {
+    failure = "statusNoPageAccess";
+  } else if (reply.refused) {
+    failure = "statusFillRefusedOtherSite";
+  }
+  setStatus(t(failure, match.name), "error");
   // Failure path: re-enable so the user can try a different match.
   state.filling = false;
 }
 
-// Fills `payload` into the active tab. The fill script is injected only
-// now, into every frame the browser lets the extension reach — opening
-// the popup granted `activeTab` for the tab's page, and the manifest
-// asks for no standing host access. The walk goes:
+// Fills `payload` into the tab `page` recorded. The fill script is
+// injected only now, into every frame the browser lets the extension
+// reach — opening the popup granted `activeTab` for the tab's page, and
+// the manifest asks for no standing host access. The walk goes:
 //
 // 1. Inject `content/fill.js` into all frames. Each injected frame
 //    opens a `pasejo-frame` port back to this popup and reports
 //    read-only focus facts in a `ready` message; no credential is sent,
 //    no DOM is mutated.
-// 2. Order the frames: the one holding focus (or, failing that, the one
+// 2. If the top frame's browser-reported origin is no longer
+//    `page.origin`, the tab navigated after the popup's own check:
+//    stop without filling anything.
+// 3. Order the frames: the one holding focus (or, failing that, the one
 //    whose focused element is a fillable input) first, the rest in the
 //    order the browser listed them.
-// 3. Send the fill to one frame at a time and stop at the first
-//    `ok:true` reply. Sequential rather than parallel because a
-//    parallel fan-out would fill every form that has a password input,
-//    including unrelated change-password iframes and any malicious
-//    iframe injected into the page.
+// 4. Walk that order. A frame `isFrameAllowed` rejects is skipped; the
+//    rest get the fill one at a time until the first `ok:true` reply.
+//    Sequential rather than parallel because a parallel fan-out would
+//    fill every form that has a password input, including unrelated
+//    change-password iframes and any malicious iframe injected into the
+//    page.
 //
-// Resolves `{ok:false, noAccess:true}` when the browser refused the
-// injection outright (a browser-internal page, an add-on store).
-async function fillAcrossFrames(tabId, payload) {
-  const collector = createFrameCollector(tabId);
+// Resolves `{ok:false}` plus `noAccess` when the browser refused the
+// injection outright (a browser-internal page, an add-on store),
+// `pageChanged` for step 2, or `refused` with the number of frames
+// `isFrameAllowed` rejected.
+async function fillAcrossFrames(page, payload, isFrameAllowed) {
+  const collector = createFrameCollector(page.tabId);
   frameCollector = collector;
   try {
-    const injected = await injectFillScript(tabId);
+    const injected = await injectFillScript(page.tabId);
     if (injected === null) {
       return { ok: false, noAccess: true };
     }
     const frames = await collector.waitFor(injected, FRAME_HANDSHAKE_TIMEOUT_MS);
+    const top = frames.find((frame) => frame.frameId === 0);
+    if (top !== undefined && top.origin !== page.origin) {
+      return { ok: false, pageChanged: true };
+    }
+    let refused = 0;
     for (const frame of orderFramesForFill(frames)) {
+      if (!(await isFrameAllowed(frame))) {
+        refused += 1;
+        continue;
+      }
       const reply = await requestFill(frame, payload);
       if (reply.ok) {
         return reply;
       }
     }
-    return { ok: false };
+    return { ok: false, refused };
   } finally {
     if (frameCollector === collector) {
       frameCollector = null;
@@ -1016,6 +1074,7 @@ function createFrameCollector(tabId) {
       const frame = {
         port,
         frameId: sender.frameId,
+        origin: senderOrigin(sender),
         ready: false,
         focused: false,
         editableFocused: false,
@@ -1089,6 +1148,93 @@ api.runtime.onConnect.addListener((port) => {
   }
   frameCollector.accept(port);
 });
+
+// The origin the browser reports for a port's sender: `sender.origin`
+// where the browser provides it (it covers `about:blank` and `srcdoc`
+// frames, which inherit their parent's origin), else the origin of
+// `sender.url`.
+function senderOrigin(sender) {
+  if (typeof sender.origin === "string") {
+    return sender.origin;
+  }
+  return originOf(sender.url);
+}
+
+// The hostname of an `http(s)` origin in the form the host compares
+// (see `activeHostname`), or null for any other origin.
+function originHostname(origin) {
+  if (!/^https?:\/\//.test(origin)) {
+    return null;
+  }
+  return activeHostname(origin);
+}
+
+// The host part of a stored URL field the way the host extracts it: a
+// value without a scheme is read as `http://<value>`. Null when it does
+// not parse.
+function storedUrlHostname(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  const withScheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)
+    ? trimmed
+    : `http://${trimmed}`;
+  return activeHostname(withScheme);
+}
+
+// Whether `frame` may receive `match`'s credential. The frame's host —
+// from the browser-reported origin, never from anything the page sends —
+// has to match the secret under the host's own rule: the stored URL's
+// exact host or the same registrable domain, or the secret-name rule
+// for a name match. The popup bundles no public-suffix list, so beyond
+// the two cases it can decide alone it asks the host:
+//
+// * the frame's host is `page.hostname`: the host matched this secret
+//   against exactly that host to produce the result row;
+// * the frame's host is the host of the secret's stored URL: an exact
+//   host match;
+// * anything else: query the host for the frame's host in the match's
+//   store and require the same secret among the results.
+//
+// `lookups` caches the host's verdict per frame host for one fill.
+async function frameMatchesCredential(frame, match, page, lookups) {
+  const hostname = originHostname(frame.origin);
+  if (hostname === null) {
+    return false;
+  }
+  if (hostname === page.hostname) {
+    return true;
+  }
+  if (hostname === storedUrlHostname(match.url)) {
+    return true;
+  }
+  if (!lookups.has(hostname)) {
+    lookups.set(hostname, hostMatchesSecret(hostname, match));
+  }
+  return lookups.get(hostname);
+}
+
+// Asks the host whether `match` (same store, same secret name) is among
+// its results for `hostname`. Any failure counts as no.
+async function hostMatchesSecret(hostname, match) {
+  let reply;
+  try {
+    reply = await sendBackground({
+      type: "query",
+      domain: hostname,
+      store: match.store ?? null,
+    });
+  } catch (_) {
+    return false;
+  }
+  if (!Array.isArray(reply.results)) {
+    return false;
+  }
+  return reply.results.some(
+    (result) => result?.name === match.name && result?.store === match.store,
+  );
+}
 
 // The frame holding focus first, else the frame whose focused element
 // is a fillable input, then the remaining frames in their given order.
@@ -1214,6 +1360,7 @@ async function main() {
     return;
   }
   state.domain = tab.hostname;
+  state.page = { tabId: tab.id, origin: tab.origin, hostname: tab.hostname };
   elements.domain.textContent = tab.hostname ?? t("noDomainPlaceholder");
   // Legacy-storage cleanup runs in parallel with the main refresh
   // pipeline so the popup-open latency stays bounded by the slower of

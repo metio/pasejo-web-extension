@@ -201,6 +201,15 @@
     "message": "pasejo no puede rellenar esta página. Los navegadores impiden a las extensiones acceder a algunas páginas, como su propia configuración y sus tiendas de complementos.",
     "description": "Shown when the browser does not let the extension run on the active page."
   },
+  "statusPageChanged": {
+    "message": "La página ha cambiado desde que se abrió pasejo. Vuelva a abrir pasejo en esta página para rellenarla.",
+    "description": "Shown when the active tab switched or navigated to another origin after the popup opened."
+  },
+  "statusFillRefusedOtherSite": {
+    "message": "No se rellenó nada. Se omitieron los marcos de sitios con los que $NAME$ no coincide.",
+    "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
   "errorUnknownStore": {
     "message": "El almacén seleccionado no existe en su configuración de pasejo.",
     "description": "Host error: the requested store is not configured."

@@ -201,6 +201,15 @@
     "message": "pasejo가 이 페이지에 입력할 수 없습니다. 브라우저는 자체 설정 페이지나 부가 기능 스토어 등 일부 페이지에서 확장 프로그램을 차단합니다.",
     "description": "Shown when the browser does not let the extension run on the active page."
   },
+  "statusPageChanged": {
+    "message": "pasejo를 연 뒤 페이지가 바뀌었습니다. 입력하려면 이 페이지에서 pasejo를 다시 여세요.",
+    "description": "Shown when the active tab switched or navigated to another origin after the popup opened."
+  },
+  "statusFillRefusedOtherSite": {
+    "message": "아무것도 입력하지 않았습니다. $NAME$와(과) 일치하지 않는 사이트의 프레임은 건너뛰었습니다.",
+    "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
   "errorUnknownStore": {
     "message": "선택한 저장소가 pasejo 구성에 존재하지 않습니다.",
     "description": "Host error: the requested store is not configured."
