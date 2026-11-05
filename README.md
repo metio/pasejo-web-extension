@@ -248,23 +248,38 @@ to any uncovered branch.
 
 ### End-to-end tests
 
-`e2e/` holds a Playwright suite (`npm run test:e2e`) that drives a real
-Chrome with the unpacked `dist/chromium` build loaded and the **real**
-`pasejo browser host` on the other end of native messaging — the only
-configuration that catches protocol drift between this extension and the
-Rust host. It builds a throwaway store, registers the host with
-`pasejo browser install-manifest`, opens the toolbar popup against an
-intercepted `example.com` page via `chrome.action.openPopup()`, and asserts
-the form is filled. The `End-to-end` CI workflow downloads a released
-`pasejo` binary, bootstraps the store, and runs the suite under `xvfb`; run
-it locally with a `pasejo` on `PATH`:
+`e2e/` holds a Playwright suite (`npm run test:e2e`) that drives a
+headless Chromium with the unpacked `dist/chromium` build loaded and the
+**real** `pasejo browser host` on the other end of native messaging — the
+only configuration that catches protocol drift between this extension and
+the Rust host. Each test registers the host with
+`pasejo browser install-manifest` inside a throwaway home and browser
+profile, serves pages at `example.com` and `evil.test` by request
+interception, opens the toolbar popup with `chrome.action.openPopup()`, and
+drives it over a CDP session (headless Chromium runs the popup but does not
+hand it to Playwright as a page). It covers a top-frame fill, a fill into a
+same-origin iframe, a cross-origin iframe the secret does not match being
+skipped, and a fill refused after the tab navigated to another site.
+
+`openPopup()` is not a user gesture, so it grants no `activeTab`. The test
+copies the extension and adds host permissions for exactly the two test
+sites to the copy's manifest; the shipped manifests stay without host
+permissions. That substitution means the suite does **not** cover the
+`activeTab` grant itself — that the toolbar click or shortcut makes the page
+reachable, and that cross-origin frames stay out of reach under
+`activeTab` alone. The manual checklist below covers those. Firefox is not
+covered by the suite either.
+
+The `End-to-end` CI workflow downloads a released `pasejo` binary,
+bootstraps the store, and runs the suite. Run it locally with a store
+bootstrapped the same way (see `.github/workflows/e2e.yml`):
 
 ```sh
 ./package.sh                                   # build dist/chromium first
-npx playwright install chrome                  # one-time
+npx playwright install chromium                # one-time
 PASEJO_BIN="$(command -v pasejo)" \
   PASEJO_CONFIG=/path/to/test-config.toml \
-  xvfb-run -a npm run test:e2e
+  npm run test:e2e
 ```
 
 ## Loading the unpacked extension
@@ -313,10 +328,10 @@ extension is purely a relay between the popup, the active tab, and
 
 ## Manual test checklist
 
-The Playwright e2e suite (above) covers the happy path automatically. This
-checklist exercises the breadth the single e2e does not — error kinds,
-multi-store streaming, OTP — after any change to the extension or to
-`pasejo browser host`.
+The Playwright e2e suite (above) covers the fill paths automatically. This
+checklist exercises what it does not — the `activeTab` grant, Firefox,
+error kinds, multi-store streaming, OTP — after any change to the extension
+or to `pasejo browser host`.
 
 **Once-off setup (per browser):**
 
@@ -343,8 +358,12 @@ multi-store streaming, OTP — after any change to the extension or to
 * For a secret with an OTP, expect *OTP: 123456* to appear in the
   row's secondary line and update when you reopen the popup after
   30 s.
+* Open the popup with the keyboard shortcut instead of the toolbar
+  icon. Expect the same matches and a working fill.
 * Open the popup on a page whose login form sits in a same-origin
   iframe. Expect the fill to land in the iframe.
+* Open the popup on a page whose login form sits in an iframe from
+  another site. Expect no fill into that iframe.
 * Open the popup, navigate the tab to another site, then click a row.
   Expect *The page changed since pasejo opened …* and no fill.
 * Open the popup on a page with no matching secret. Expect *No matches

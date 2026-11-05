@@ -3,11 +3,10 @@
 
 import { defineConfig } from "@playwright/test";
 
-// The e2e suite drives a real Chrome with the unpacked extension loaded and
-// the real `pasejo browser host` on the other end of native messaging, so it
-// lives apart from the happy-dom unit suite (`tests/**`, run by Vitest). A
-// single worker only: the test registers one native-messaging host manifest
-// and one shared store, which concurrent runs would race over.
+// The e2e suite drives a headless Chromium with the unpacked extension loaded
+// and the real `pasejo browser host` on the other end of native messaging, so
+// it lives apart from the happy-dom unit suite (`tests/**`, run by Vitest). A
+// single worker only: every test reads the one shared store.
 export default defineConfig({
   testDir: "./e2e",
   testMatch: "**/*.e2e.js",
