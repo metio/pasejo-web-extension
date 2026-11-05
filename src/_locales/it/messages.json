@@ -31,10 +31,6 @@
     "message": "Interroga di nuovo l'host",
     "description": "Tooltip for the Refresh button."
   },
-  "basicAuthToggleLabel": {
-    "message": "Compila automaticamente i prompt di autenticazione di base HTTP quando esattamente una credenziale memorizzata corrisponde al sito",
-    "description": "Label for the opt-in HTTP basic-auth setting."
-  },
   "allStoresOption": {
     "message": "Tutti gli archivi",
     "description": "Dropdown entry that fans a query out across every store."

@@ -18,7 +18,6 @@ const elements = {
   results: document.getElementById("results"),
   permissionBanner: document.getElementById("permission-banner"),
   grantPermissions: document.getElementById("grant-permissions"),
-  basicAuthToggle: document.getElementById("basic-auth-toggle"),
 };
 
 // Sentinel value the Store dropdown uses for "fan out the query across
@@ -303,8 +302,7 @@ async function pickPreferredStore(stores, hostname) {
 // explicitly: the LRU victim is whichever entry has the smallest
 // timestamp. Within-popup concurrent writes are serialised through
 // `hostStoreWriteQueue` below. `HOST_STORE_KEY` and its `coerceHostStoreMap`
-// validator come from `PASEJO` so the popup and the basic-auth recall read
-// the same key with the same shape.
+// validator come from `PASEJO`.
 
 // Storage keys the popup wrote in earlier builds before the single-key
 // schema landed. The current code never reads them, so without a
@@ -317,6 +315,7 @@ async function pickPreferredStore(stores, hostname) {
 // catches drift introduced by dev-tools edits between popup opens.
 const LEGACY_HOST_KEY_PREFIX = "store-for-host:";
 const LEGACY_HOST_INDEX_KEY = "pasejo:host-store-index";
+const LEGACY_SETTINGS_KEY = "pasejo:settings";
 
 // Best-effort cleanup of any storage keys the popup no longer owns.
 // Removes:
@@ -325,7 +324,9 @@ const LEGACY_HOST_INDEX_KEY = "pasejo:host-store-index";
 //   schema; the current schema collapses everything into a single
 //   `pasejo:host-stores` map);
 // * the legacy `pasejo:host-store-index` array that tracked
-//   eviction order in the old two-key model.
+//   eviction order in the old two-key model;
+// * the legacy `pasejo:settings` object that held the opt-in for the
+//   HTTP basic-auth fill earlier builds offered.
 //
 // Failures are swallowed: reconciliation is opportunistic, the
 // popup must keep working even if storage is unavailable, and a
@@ -342,6 +343,7 @@ async function reconcileLegacyStorage() {
     const stale = Object.keys(all).filter(
       (key) =>
         key === LEGACY_HOST_INDEX_KEY ||
+        key === LEGACY_SETTINGS_KEY ||
         key.startsWith(LEGACY_HOST_KEY_PREFIX),
     );
     if (stale.length > 0) {
@@ -361,10 +363,6 @@ async function reconcileLegacyStorage() {
 // cap is reached, the host with the oldest `lastUsedAt` falls off
 // whenever a new host is added.
 const MAX_REMEMBERED_HOSTS = 500;
-
-// `coerceHostStoreMap` (the storage trust-boundary validator that drops
-// malformed entries) and `HOST_STORE_KEY` are destructured from `PASEJO`
-// above so the popup and the basic-auth recall share one definition.
 
 // LRU-trims `map` down to `cap` entries (oldest `lastUsedAt` first).
 // Returns the cleaned map and the hostnames that were evicted so the
@@ -436,43 +434,10 @@ async function rememberStoreForHost(hostname, storeName) {
   });
 }
 
-// Thin wrapper over the shared `PASEJO.recallStoreForHost` so the popup's
-// call site (and the exposed-for-tests name) stay unchanged while the recall
-// logic lives in one place that every feature reads.
+// Thin wrapper binding the shared `PASEJO.recallStoreForHost` to this
+// popup's API handle.
 async function recallStoreForHost(hostname) {
   return globalThis.PASEJO.recallStoreForHost(api, hostname);
-}
-
-// Reflect the stored basic-auth opt-in into the toggle. Guarded so the popup
-// still works in environments without the toggle element.
-async function loadBasicAuthSetting() {
-  if (!elements.basicAuthToggle) {
-    return;
-  }
-  elements.basicAuthToggle.checked =
-    await globalThis.PASEJO.readBasicAuthEnabled(api);
-}
-
-// Persist the opt-in. Read-modify-write the settings object so any future
-// settings keys survive. Failure-tolerant: a storage error just means the
-// toggle doesn't stick this time.
-async function setBasicAuthEnabled(enabled) {
-  if (!api.storage?.local) {
-    return;
-  }
-  const key = globalThis.PASEJO.SETTINGS_KEY;
-  try {
-    const result = await api.storage.local.get(key);
-    const existing = result[key];
-    const settings =
-      existing && typeof existing === "object" && !Array.isArray(existing)
-        ? { ...existing }
-        : {};
-    settings.basicAuth = enabled === true;
-    await api.storage.local.set({ [key]: settings });
-  } catch (_) {
-    // Non-fatal — the toggle simply won't persist until storage works.
-  }
 }
 
 function renderHostError(reply) {
@@ -1198,7 +1163,6 @@ async function main() {
   await Promise.all([
     reconcileLegacyStorage(),
     revealPermissionBannerIfNeeded(),
-    loadBasicAuthSetting(),
     refreshStoresAndQuery(),
   ]);
 }
@@ -1227,11 +1191,6 @@ elements.store.addEventListener("change", () => {
   // Fire-and-forget; the runQuery below doesn't depend on the write.
   rememberStoreForHost(state.domain, state.store);
   runQuery();
-});
-
-// Optional in environments without the toggle (e.g. the reduced test DOM).
-elements.basicAuthToggle?.addEventListener("change", () => {
-  setBasicAuthEnabled(elements.basicAuthToggle.checked);
 });
 
 // Debounced: a second click while a refresh is already in flight would

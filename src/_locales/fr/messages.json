@@ -31,10 +31,6 @@
     "message": "Réinterroger l'hôte",
     "description": "Tooltip for the Refresh button."
   },
-  "basicAuthToggleLabel": {
-    "message": "Remplir automatiquement les invites d'authentification HTTP basic lorsqu'un seul identifiant stocké correspond au site",
-    "description": "Label for the opt-in HTTP basic-auth setting."
-  },
   "allStoresOption": {
     "message": "Tous les coffres",
     "description": "Dropdown entry that fans a query out across every store."

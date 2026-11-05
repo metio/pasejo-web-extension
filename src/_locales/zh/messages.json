@@ -31,10 +31,6 @@
     "message": "重新查询主机",
     "description": "Tooltip for the Refresh button."
   },
-  "basicAuthToggleLabel": {
-    "message": "当恰好有一个存储的凭据与站点匹配时，自动填充 HTTP 基本认证提示",
-    "description": "Label for the opt-in HTTP basic-auth setting."
-  },
   "allStoresOption": {
     "message": "所有存储",
     "description": "Dropdown entry that fans a query out across every store."

@@ -31,10 +31,6 @@
     "message": "ホストに再問い合わせ",
     "description": "Tooltip for the Refresh button."
   },
-  "basicAuthToggleLabel": {
-    "message": "保存された認証情報がサイトと 1 つだけ一致する場合、HTTP ベーシック認証のプロンプトを自動入力する",
-    "description": "Label for the opt-in HTTP basic-auth setting."
-  },
   "allStoresOption": {
     "message": "すべてのストア",
     "description": "Dropdown entry that fans a query out across every store."

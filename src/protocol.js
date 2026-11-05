@@ -23,14 +23,7 @@
 
   // Storage key holding the per-host remembered store. Value shape:
   //   { [hostname]: { store: string, lastUsedAt: number } }
-  // The choice the user makes for a site must be honoured by EVERY feature
-  // that looks up a credential (popup fill, basic-auth), so the recall lives
-  // here as a shared primitive rather than inside any one surface.
   const HOST_STORE_KEY = "pasejo:host-stores";
-
-  // Storage key holding user settings (a flat object). Currently just
-  // `{ basicAuth: boolean }`.
-  const SETTINGS_KEY = "pasejo:settings";
 
   // Validate a stored host->store map, dropping any malformed entries.
   function coerceHostStoreMap(raw) {
@@ -67,23 +60,6 @@
     }
   }
 
-  // Whether the user has opted in to automatic HTTP basic-auth filling.
-  // Defaults to false; any storage error is treated as "off".
-  async function readBasicAuthEnabled(api) {
-    if (!api?.storage?.local) {
-      return false;
-    }
-    try {
-      const result = await api.storage.local.get(SETTINGS_KEY);
-      const settings = result[SETTINGS_KEY];
-      return Boolean(
-        settings && typeof settings === "object" && settings.basicAuth === true,
-      );
-    } catch (_) {
-      return false;
-    }
-  }
-
   scope.PASEJO = Object.freeze({
     // Native-messaging host registered by `pasejo browser install-manifest`.
     // Must match `HOST_NAME` in the pasejo install-manifest module.
@@ -98,13 +74,11 @@
     // currently only one valid version.
     PROTOCOL_VERSION: 1,
 
-    // Shared storage keys + helpers (defined above) so every feature reads
-    // the per-host remembered store and the settings the same way.
+    // Storage key + helpers for the per-host remembered store (defined
+    // above).
     HOST_STORE_KEY,
-    SETTINGS_KEY,
     coerceHostStoreMap,
     recallStoreForHost,
-    readBasicAuthEnabled,
 
     // Request actions accepted by `pasejo browser host`.
     ACTION: Object.freeze({

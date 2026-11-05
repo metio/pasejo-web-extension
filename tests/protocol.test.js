@@ -139,36 +139,6 @@ describe("protocol.js", () => {
       };
     }
 
-    it("readBasicAuthEnabled defaults to false", async () => {
-      const pasejo = loadPasejo();
-      expect(await pasejo.readBasicAuthEnabled(storageStub({}))).toBe(false);
-    });
-
-    it("readBasicAuthEnabled is true only for `basicAuth === true`", async () => {
-      const pasejo = loadPasejo();
-      const on = storageStub({ "pasejo:settings": { basicAuth: true } });
-      const stringy = storageStub({ "pasejo:settings": { basicAuth: "yes" } });
-      const nulled = storageStub({ "pasejo:settings": null });
-      expect(await pasejo.readBasicAuthEnabled(on)).toBe(true);
-      expect(await pasejo.readBasicAuthEnabled(stringy)).toBe(false);
-      expect(await pasejo.readBasicAuthEnabled(nulled)).toBe(false);
-    });
-
-    it("readBasicAuthEnabled tolerates a missing storage API", async () => {
-      const pasejo = loadPasejo();
-      expect(await pasejo.readBasicAuthEnabled({})).toBe(false);
-    });
-
-    it("readBasicAuthEnabled treats a storage read error as opted-out", async () => {
-      const pasejo = loadPasejo();
-      const failing = {
-        storage: {
-          local: { get: () => Promise.reject(new Error("storage broke")) },
-        },
-      };
-      expect(await pasejo.readBasicAuthEnabled(failing)).toBe(false);
-    });
-
     it("recallStoreForHost returns the remembered store or null", async () => {
       const pasejo = loadPasejo();
       const stub = storageStub({

@@ -40,8 +40,6 @@ const EXPOSED = [
   "coerceHostStoreMap",
   "pruneMapToCap",
   "renderHostError",
-  "loadBasicAuthSetting",
-  "setBasicAuthEnabled",
   "runQuery",
   "runMultiStoreQuery",
   "showMatches",
@@ -227,71 +225,6 @@ describe("popup.js", () => {
       expect(popup.elements.grantPermissions.textContent).toBe("Grant access");
       expect(popup.elements.refresh.title).toBe("Re-query the host");
       expect(popup.elements.store.getAttribute("aria-label")).toBe("Store");
-    });
-  });
-
-  describe("basic-auth opt-in toggle", () => {
-    const SETTINGS_KEY = "pasejo:settings";
-
-    it("reflects a stored opt-in into the toggle on load", async () => {
-      const { api, popup } = await setUp();
-      api.storage.local.get.mockResolvedValue({
-        [SETTINGS_KEY]: { basicAuth: true },
-      });
-      await popup.loadBasicAuthSetting();
-      expect(popup.elements.basicAuthToggle.checked).toBe(true);
-    });
-
-    it("does nothing when the toggle element is absent", async () => {
-      const { popup } = await setUp();
-      const toggle = popup.elements.basicAuthToggle;
-      popup.elements.basicAuthToggle = null;
-      await expect(popup.loadBasicAuthSetting()).resolves.toBeUndefined();
-      popup.elements.basicAuthToggle = toggle;
-    });
-
-    it("persists the opt-in, merging into existing settings", async () => {
-      const { api, popup } = await setUp();
-      api.storage.local.get.mockResolvedValue({
-        [SETTINGS_KEY]: { other: 1 },
-      });
-      await popup.setBasicAuthEnabled(true);
-      expect(api.storage.local.set).toHaveBeenCalledWith({
-        [SETTINGS_KEY]: { other: 1, basicAuth: true },
-      });
-    });
-
-    it("starts a fresh settings object when the stored value is not an object", async () => {
-      const { api, popup } = await setUp();
-      api.storage.local.get.mockResolvedValue({ [SETTINGS_KEY]: "garbage" });
-      await popup.setBasicAuthEnabled(false);
-      expect(api.storage.local.set).toHaveBeenCalledWith({
-        [SETTINGS_KEY]: { basicAuth: false },
-      });
-    });
-
-    it("tolerates a storage failure while persisting", async () => {
-      const { api, popup } = await setUp();
-      api.storage.local.get.mockRejectedValue(new Error("nope"));
-      await expect(popup.setBasicAuthEnabled(true)).resolves.toBeUndefined();
-    });
-
-    it("returns early when no storage API is available", async () => {
-      const { api, popup } = await setUp();
-      const local = api.storage.local;
-      api.storage.local = undefined;
-      await expect(popup.setBasicAuthEnabled(true)).resolves.toBeUndefined();
-      expect(local.set).not.toHaveBeenCalled();
-      api.storage.local = local;
-    });
-
-    it("persists when the user flips the toggle", async () => {
-      const { api, popup } = await setUp();
-      api.storage.local.get.mockResolvedValue({});
-      popup.elements.basicAuthToggle.checked = true;
-      popup.elements.basicAuthToggle.dispatchEvent(new Event("change"));
-      await flushAsync();
-      expect(api.storage.local.set).toHaveBeenCalled();
     });
   });
 
@@ -1442,6 +1375,18 @@ describe("popup.js", () => {
       expect(api.storage.local.remove).toHaveBeenCalledWith([
         popup.LEGACY_HOST_INDEX_KEY,
       ]);
+    });
+
+    it("removes the legacy `pasejo:settings` key of the retired basic-auth opt-in", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValueOnce({
+        "pasejo:settings": { basicAuth: true },
+        [popup.HOST_STORE_KEY]: {
+          "current.test": { store: "x", lastUsedAt: 1 },
+        },
+      });
+      await popup.reconcileLegacyStorage();
+      expect(api.storage.local.remove).toHaveBeenCalledWith(["pasejo:settings"]);
     });
 
     it("removes legacy keys AND the index in a single batched call", async () => {

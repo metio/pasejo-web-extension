@@ -55,9 +55,7 @@
     "activeTab",
     "nativeMessaging",
     "storage",
-    "webNavigation",
-    "webRequest",
-    "webRequestBlocking"
+    "webNavigation"
   ],
   "host_permissions": ["<all_urls>"]
 }

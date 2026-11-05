@@ -31,10 +31,6 @@
     "message": "호스트에 다시 질의",
     "description": "Tooltip for the Refresh button."
   },
-  "basicAuthToggleLabel": {
-    "message": "사이트와 정확히 하나의 저장된 자격 증명이 일치할 때 HTTP 기본 인증 프롬프트를 자동으로 채우기",
-    "description": "Label for the opt-in HTTP basic-auth setting."
-  },
   "allStoresOption": {
     "message": "모든 저장소",
     "description": "Dropdown entry that fans a query out across every store."

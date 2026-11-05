@@ -22,11 +22,5 @@ export function buildPopupDom(document) {
     </section>
     <section id="status" class="status" role="status" aria-live="polite"></section>
     <ul id="results" class="results"></ul>
-    <section class="settings">
-      <label class="setting" for="basic-auth-toggle">
-        <input id="basic-auth-toggle" type="checkbox" />
-        <span data-i18n="basicAuthToggleLabel">Auto-fill HTTP basic-auth prompts when exactly one stored credential matches the site</span>
-      </label>
-    </section>
   `;
 }

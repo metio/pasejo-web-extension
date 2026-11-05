@@ -45,7 +45,6 @@ function getMessage(key, substitutions) {
 export function makeApiMock() {
   const onMessageListeners = [];
   const onConnectListeners = [];
-  const onAuthRequiredListeners = [];
   const ports = [];
   // Pairs created by `runtime.connect`: each entry holds the popup-
   // side port and the background-side port so a test can drive either
@@ -97,12 +96,6 @@ export function makeApiMock() {
     webNavigation: {
       getAllFrames: vi.fn(),
     },
-    webRequest: {
-      onAuthRequired: {
-        addListener: vi.fn((listener) => onAuthRequiredListeners.push(listener)),
-        listeners: onAuthRequiredListeners,
-      },
-    },
     permissions: {
       contains: vi.fn().mockResolvedValue(true),
       request: vi.fn().mockResolvedValue(true),
@@ -114,26 +107,8 @@ export function makeApiMock() {
     __ports: ports,
     __onMessageListeners: onMessageListeners,
     __onConnectListeners: onConnectListeners,
-    __onAuthRequiredListeners: onAuthRequiredListeners,
     __streamPairs: streamPairs,
   };
-}
-
-// Invokes the `webRequest.onAuthRequired` handler `background.js` registered
-// and resolves with whatever it produces — handling both wirings: Chromium's
-// `asyncBlocking` (the handler calls a callback) and Firefox's blocking form
-// (the handler returns a Promise).
-export function invokeAuthRequired(api, details) {
-  const [listener] = api.__onAuthRequiredListeners;
-  if (!listener) {
-    throw new Error("onAuthRequired listener was never registered");
-  }
-  return new Promise((resolve) => {
-    const returned = listener(details, resolve);
-    if (returned && typeof returned.then === "function") {
-      returned.then(resolve);
-    }
-  });
 }
 
 // Native-messaging Port stand-in. Captures the listeners the host code
