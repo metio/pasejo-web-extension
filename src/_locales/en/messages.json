@@ -1,0 +1,249 @@
+{
+  "extensionName": {
+    "message": "pasejo",
+    "description": "Extension name shown in the browser's add-on list and toolbar."
+  },
+  "extensionDescription": {
+    "message": "Fill credentials from an age-encrypted pasejo store",
+    "description": "Extension description shown in the browser's add-on list."
+  },
+  "commandOpenPopup": {
+    "message": "Open the pasejo popup",
+    "description": "Description of the keyboard command that opens the popup."
+  },
+  "permissionBannerText": {
+    "message": "pasejo needs permission to access pages before it can fill credentials.",
+    "description": "Firefox-only banner explaining why host permission is required."
+  },
+  "grantAccessButton": {
+    "message": "Grant access",
+    "description": "Button that requests the missing host permission."
+  },
+  "storeLabel": {
+    "message": "Store",
+    "description": "Label and accessible name for the store-selector dropdown."
+  },
+  "refreshButton": {
+    "message": "Refresh",
+    "description": "Button that re-queries the host."
+  },
+  "refreshButtonTitle": {
+    "message": "Re-query the host",
+    "description": "Tooltip for the Refresh button."
+  },
+  "basicAuthToggleLabel": {
+    "message": "Auto-fill HTTP basic-auth prompts when exactly one stored credential matches the site",
+    "description": "Label for the opt-in HTTP basic-auth setting."
+  },
+  "allStoresOption": {
+    "message": "All stores",
+    "description": "Dropdown entry that fans a query out across every store."
+  },
+  "storeOptionDefault": {
+    "message": "$NAME$ (default)",
+    "description": "Dropdown entry marking the default store.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "matchBadgeUrl": {
+    "message": "url",
+    "description": "Badge shown when a match came from a URL field."
+  },
+  "matchBadgeName": {
+    "message": "name",
+    "description": "Badge shown when a match came from the secret name."
+  },
+  "fillButton": {
+    "message": "Fill",
+    "description": "Button that fills a credential into the page."
+  },
+  "fillRowAriaLabel": {
+    "message": "Fill $NAME$",
+    "description": "Accessible label for a result row.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "otpLabel": {
+    "message": "OTP: $CODE$",
+    "description": "Read-only one-time code shown on a result row.",
+    "placeholders": { "code": { "content": "$1" } }
+  },
+  "storeInlineLabel": {
+    "message": "store: $NAME$",
+    "description": "Inline label showing which store a match came from.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusHostUnreachable": {
+    "message": "Could not reach the host: $ERROR$",
+    "description": "Shown when the native-messaging host cannot be reached.",
+    "placeholders": { "error": { "content": "$1" } }
+  },
+  "protocolUnknown": {
+    "message": "(unknown)",
+    "description": "Placeholder for a host that reported no protocol version."
+  },
+  "statusProtocolMismatch": {
+    "message": "Host speaks protocol $HOST$, extension speaks protocol $EXTENSION$. Update the pasejo binary or the extension so both ends match.",
+    "description": "Shown when the host and extension protocol versions differ.",
+    "placeholders": {
+      "host": { "content": "$1" },
+      "extension": { "content": "$2" }
+    }
+  },
+  "statusMalformedStores": {
+    "message": "Malformed host response: `stores` is not an array.",
+    "description": "Shown when the host's store list is not an array."
+  },
+  "statusMalformedResults": {
+    "message": "Malformed host response: `results` is not an array.",
+    "description": "Shown when the host's query results are not an array."
+  },
+  "statusHostReturnedError": {
+    "message": "Host returned $ERROR$.",
+    "description": "Fallback for an unrecognised host error kind.",
+    "placeholders": { "error": { "content": "$1" } }
+  },
+  "hostErrorHintSuffix": {
+    "message": " ($HINT$)",
+    "description": "Appends the host-supplied hint to an error message.",
+    "placeholders": { "hint": { "content": "$1" } }
+  },
+  "statusNoDomain": {
+    "message": "No domain for the active tab — nothing to search.",
+    "description": "Shown when the active tab has no host to search for."
+  },
+  "statusSearching": {
+    "message": "Searching for $DOMAIN$…",
+    "description": "Progress line for a single-store query.",
+    "placeholders": { "domain": { "content": "$1" } }
+  },
+  "statusSearchingProgress": {
+    "message": "Searching for $DOMAIN$… ($ANSWERED$/$TOTAL$ stores answered)",
+    "description": "Progress line for a multi-store query.",
+    "placeholders": {
+      "domain": { "content": "$1" },
+      "answered": { "content": "$2" },
+      "total": { "content": "$3" }
+    }
+  },
+  "statusNoStoresToSearch": {
+    "message": "No stores to search.",
+    "description": "Shown when a multi-store query has no stores."
+  },
+  "statusProtocolUnverified": {
+    "message": "Refusing multi-store query: host protocol has not been verified yet.",
+    "description": "Guard shown when the multi-store path runs before protocol verification."
+  },
+  "statusNoMatches": {
+    "message": "No matches for $DOMAIN$.",
+    "description": "Shown when a query returns no matches.",
+    "placeholders": { "domain": { "content": "$1" } }
+  },
+  "statusNoMatchesSkipped": {
+    "message": "No matches for $DOMAIN$ ($COUNT$ store(s) skipped: $NAMES$).",
+    "description": "Shown when a query returns no matches and some stores were skipped.",
+    "placeholders": {
+      "domain": { "content": "$1" },
+      "count": { "content": "$2" },
+      "names": { "content": "$3" }
+    }
+  },
+  "statusMatchesOne": {
+    "message": "$COUNT$ match.",
+    "description": "Shown when a query returns exactly one match.",
+    "placeholders": { "count": { "content": "$1" } }
+  },
+  "statusMatchesOther": {
+    "message": "$COUNT$ matches.",
+    "description": "Shown when a query returns more than one match.",
+    "placeholders": { "count": { "content": "$1" } }
+  },
+  "statusSkippedSuffix": {
+    "message": " ($COUNT$ store(s) skipped: $NAMES$)",
+    "description": "Appended to the match-count line when some stores were skipped.",
+    "placeholders": {
+      "count": { "content": "$1" },
+      "names": { "content": "$2" }
+    }
+  },
+  "skippedNamesFallback": {
+    "message": "errors",
+    "description": "Stand-in for skipped store names when none are known."
+  },
+  "statusNoActiveTab": {
+    "message": "No active tab to fill.",
+    "description": "Shown when there is no active tab to fill into."
+  },
+  "statusNoActiveTabMain": {
+    "message": "No active tab.",
+    "description": "Shown when the popup opens with no active tab."
+  },
+  "noDomainPlaceholder": {
+    "message": "(no domain)",
+    "description": "Header placeholder when the active tab has no hostname."
+  },
+  "statusPageAccessGranted": {
+    "message": "Page access granted. Reload already-open tabs before filling.",
+    "description": "Shown after the user grants host permission."
+  },
+  "statusPageAccessRequestFailed": {
+    "message": "Could not request page access: $ERROR$",
+    "description": "Shown when requesting host permission fails.",
+    "placeholders": { "error": { "content": "$1" } }
+  },
+  "statusFilledOtpOnly": {
+    "message": "Filled the one-time code for $NAME$.",
+    "description": "Shown after filling only a one-time code (standalone 2FA step).",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilledUsernameOnly": {
+    "message": "Filled username for $NAME$ (no password field on this page).",
+    "description": "Shown after a partial fill (username only).",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilledUsernameOtp": {
+    "message": "Filled username and its one-time code for $NAME$ (no password field on this page).",
+    "description": "Shown after a partial fill that also filled a one-time code.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilled": {
+    "message": "Filled $NAME$.",
+    "description": "Shown after a successful username + password fill.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilledOtp": {
+    "message": "Filled $NAME$ and its one-time code.",
+    "description": "Shown after a fill that also filled a one-time code.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusNoFillablePassword": {
+    "message": "No frame on the page had a fillable password input.",
+    "description": "Shown when no frame had a fillable password input."
+  },
+  "errorUnknownStore": {
+    "message": "The selected store does not exist in your pasejo configuration.",
+    "description": "Host error: the requested store is not configured."
+  },
+  "errorNoStoreConfigured": {
+    "message": "No pasejo store is configured. Run `pasejo store add` first.",
+    "description": "Host error: no store is configured at all."
+  },
+  "errorIdentityLocked": {
+    "message": "Could not decrypt the store. Add the age identity to ssh-agent — the host cannot prompt for a passphrase.",
+    "description": "Host error: the store could not be decrypted."
+  },
+  "errorHookFailed": {
+    "message": "A pasejo pull hook failed before the store could be read. Check the hook command and the network.",
+    "description": "Host error: a pull hook failed."
+  },
+  "errorStoreUnreachable": {
+    "message": "The store file could not be opened or locked. Check it exists and that you have read permission.",
+    "description": "Host error: the store file could not be opened or locked."
+  },
+  "errorDecodeError": {
+    "message": "The host could not decode the request. Update the extension or the pasejo binary.",
+    "description": "Host error: the request could not be decoded."
+  },
+  "errorResponseTooLarge": {
+    "message": "The reply for this store was too large for the browser's native-messaging limit. Trim very large secret bodies or narrow the match.",
+    "description": "Host error: the reply exceeded the native-messaging size limit."
+  }
+}

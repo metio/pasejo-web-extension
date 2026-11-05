@@ -5,6 +5,85 @@
 // `importScripts` (Chromium service worker), so this file installs its
 // exports on `globalThis` rather than using ES module syntax.
 (function installPasejoProtocol(scope) {
+  // Cross-browser binding for the WebExtensions API. Firefox exposes
+  // `browser`; Chromium-family browsers only expose `chrome`. The shapes
+  // we use (runtime ports, tabs.query, tabs.sendMessage, i18n.getMessage)
+  // are identical across both, so we pick whichever global is defined.
+  const api = scope.browser ?? scope.chrome;
+
+  // Localized-string lookup. Wraps `i18n.getMessage` so every surface
+  // (popup, background) resolves user-facing text the same way and the
+  // browser picks the locale from `_locales/`, falling back to English.
+  // Returns "" when the i18n API is unavailable so a caller never renders
+  // `undefined`; substitutions are stringified to match the API contract.
+  function t(key, ...subs) {
+    const args = subs.length > 0 ? subs.map(String) : undefined;
+    return api?.i18n?.getMessage(key, args) ?? "";
+  }
+
+  // Storage key holding the per-host remembered store. Value shape:
+  //   { [hostname]: { store: string, lastUsedAt: number } }
+  // The choice the user makes for a site must be honoured by EVERY feature
+  // that looks up a credential (popup fill, basic-auth), so the recall lives
+  // here as a shared primitive rather than inside any one surface.
+  const HOST_STORE_KEY = "pasejo:host-stores";
+
+  // Storage key holding user settings (a flat object). Currently just
+  // `{ basicAuth: boolean }`.
+  const SETTINGS_KEY = "pasejo:settings";
+
+  // Validate a stored host->store map, dropping any malformed entries.
+  function coerceHostStoreMap(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return {};
+    }
+    const out = {};
+    for (const [hostname, entry] of Object.entries(raw)) {
+      if (!entry || typeof entry !== "object") {
+        continue;
+      }
+      const store = entry.store;
+      const lastUsedAt = entry.lastUsedAt;
+      if (typeof store !== "string" || typeof lastUsedAt !== "number") {
+        continue;
+      }
+      out[hostname] = { store, lastUsedAt };
+    }
+    return out;
+  }
+
+  // The store the user last chose for `hostname`, or null. Read-only and
+  // failure-tolerant: any storage error yields null (no remembered choice).
+  async function recallStoreForHost(api, hostname) {
+    if (!hostname || !api?.storage?.local) {
+      return null;
+    }
+    try {
+      const result = await api.storage.local.get(HOST_STORE_KEY);
+      const map = coerceHostStoreMap(result[HOST_STORE_KEY]);
+      return map[hostname]?.store ?? null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Whether the user has opted in to automatic HTTP basic-auth filling.
+  // Defaults to false; any storage error is treated as "off".
+  async function readBasicAuthEnabled(api) {
+    if (!api?.storage?.local) {
+      return false;
+    }
+    try {
+      const result = await api.storage.local.get(SETTINGS_KEY);
+      const settings = result[SETTINGS_KEY];
+      return Boolean(
+        settings && typeof settings === "object" && settings.basicAuth === true,
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
   scope.PASEJO = Object.freeze({
     // Native-messaging host registered by `pasejo browser install-manifest`.
     // Must match `HOST_NAME` in the pasejo install-manifest module.
@@ -18,6 +97,14 @@
     // bump it and surface a clear error to the user, but there is
     // currently only one valid version.
     PROTOCOL_VERSION: 1,
+
+    // Shared storage keys + helpers (defined above) so every feature reads
+    // the per-host remembered store and the settings the same way.
+    HOST_STORE_KEY,
+    SETTINGS_KEY,
+    coerceHostStoreMap,
+    recallStoreForHost,
+    readBasicAuthEnabled,
 
     // Request actions accepted by `pasejo browser host`.
     ACTION: Object.freeze({
@@ -35,30 +122,27 @@
       HookFailed: "hook_failed",
       StoreUnreachable: "store_unreachable",
       NoStoreConfigured: "no_store_configured",
+      ResponseTooLarge: "response_too_large",
     }),
 
-    // Popup copy per error kind. Anything outside this map falls back to
-    // a generic message plus the host-supplied `hint`.
-    ERROR_COPY: Object.freeze({
-      unknown_store:
-        "The selected store does not exist in your pasejo configuration.",
-      no_store_configured:
-        "No pasejo store is configured. Run `pasejo store add` first.",
-      identity_locked:
-        "Could not decrypt the store. Add the age identity to ssh-agent — the host cannot prompt for a passphrase.",
-      hook_failed:
-        "A pasejo pull hook failed before the store could be read. Check the hook command and the network.",
-      store_unreachable:
-        "The store file could not be opened or locked. Check it exists and that you have read permission.",
-      decode_error:
-        "The host could not decode the request. Update the extension or the pasejo binary.",
+    // `_locales` message id per host error kind. Anything outside this
+    // map falls back to a generic message plus the host-supplied `hint`.
+    // The text itself lives in `_locales/<lang>/messages.json`; the popup
+    // resolves a kind to its localized copy via `t(ERROR_MESSAGE_IDS[kind])`.
+    ERROR_MESSAGE_IDS: Object.freeze({
+      unknown_store: "errorUnknownStore",
+      no_store_configured: "errorNoStoreConfigured",
+      identity_locked: "errorIdentityLocked",
+      hook_failed: "errorHookFailed",
+      store_unreachable: "errorStoreUnreachable",
+      decode_error: "errorDecodeError",
+      response_too_large: "errorResponseTooLarge",
     }),
 
-    // Cross-browser binding for the WebExtensions API. Firefox exposes
-    // `browser`; Chromium-family browsers only expose `chrome`. The
-    // shapes we use (runtime ports, tabs.query, tabs.sendMessage) are
-    // event-driven and identical across both, so we just pick whichever
-    // global is defined.
-    api: scope.browser ?? scope.chrome,
+    // Localized-string lookup (see `t` above), exposed so the popup and
+    // background resolve user-facing text through one seam.
+    t,
+
+    api,
   });
 })(globalThis);

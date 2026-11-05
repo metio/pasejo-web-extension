@@ -15,6 +15,15 @@
   // colour on every page.
   const PULSE_OUTLINE_COLOR = "AccentColor";
 
+  // Timestamp of the last `focusin` that landed on a fill-relevant
+  // input in this frame. This is the signal the popup's frame-picking
+  // actually needs: "which frame was the user typing in BEFORE they
+  // opened the popup". `document.hasFocus()` alone cannot answer that
+  // — the probe only ever runs while the extension popup is open, and
+  // the popup holds the window focus at that moment, so every frame
+  // reports false.
+  let lastEditableFocusAt = 0;
+
   // The pickers below are intentionally conservative: nothing fires
   // until the popup explicitly sends `{type: "fill"}`. The page never
   // sees credentials on load and never sees them in response to focus or
@@ -26,14 +35,22 @@
       return false;
     }
     if (message.type === "probe-focus") {
-      sendResponse({ ok: true, focused: document.hasFocus() });
+      sendResponse({
+        ok: true,
+        focused: document.hasFocus(),
+        lastEditableFocusAt,
+      });
       return false;
     }
     if (message.type !== "fill") {
       return false;
     }
     try {
-      const result = fill(message.username ?? "", message.password ?? "");
+      const result = fill(
+        message.username ?? "",
+        message.password ?? "",
+        message.otp ?? "",
+      );
       sendResponse({ ok: true, ...result });
     } catch (err) {
       sendResponse({ ok: false, error: err?.message ?? String(err) });
@@ -41,7 +58,7 @@
     return false;
   });
 
-  function fill(username, password) {
+  function fill(username, password, otp) {
     // Single deep traversal: collect every `<input>` reachable from
     // the document, including across open shadow boundaries. The
     // find* helpers below filter this pool by type / role rather
@@ -49,6 +66,10 @@
     // used to fire per fill in the form-less and standalone-username
     // paths; one is enough.
     const allInputs = queryAllDeep(document, "input");
+    // A one-time code can sit on the same page as the credentials or on a
+    // standalone 2FA step, so resolve it up front and let whichever path
+    // below returns report whether a field actually received it.
+    const otpFilled = otp ? fillOtp(allInputs, otp) : false;
     const passwordInput = findPasswordInput(allInputs);
     if (!passwordInput) {
       // Multi-step login pages (email page → password page) have no
@@ -61,9 +82,15 @@
         if (usernameInput) {
           assignInput(usernameInput, username);
           return {
-            filled: { username: true, password: false },
+            filled: { username: true, password: false, otp: otpFilled },
           };
         }
+      }
+      // A standalone 2FA page has neither a password nor a username field;
+      // succeed if the OTP landed, otherwise keep the historical "no
+      // password" error the popup already surfaces.
+      if (otpFilled) {
+        return { filled: { username: false, password: false, otp: true } };
       }
       throw new Error("No password input found on this page");
     }
@@ -79,8 +106,38 @@
       filled: {
         username: Boolean(usernameInput && username),
         password: Boolean(password),
+        otp: otpFilled,
       },
     };
+  }
+
+  // Fills the first one-time-code field with `code`; returns whether a field
+  // was found. Kept separate so both the credentials path and the standalone
+  // 2FA path can place the code.
+  function fillOtp(allInputs, code) {
+    const otpInput = findOtpInput(allInputs);
+    if (!otpInput) {
+      return false;
+    }
+    assignInput(otpInput, code);
+    return true;
+  }
+
+  // The one-time-code field to fill, or null. The explicit web standard
+  // (`autocomplete="one-time-code"`) wins; otherwise the most-visible input
+  // that names a one-time code is taken.
+  function findOtpInput(allInputs) {
+    const candidates = allInputs.filter(
+      (el) => isInteractable(el) && looksLikeOtp(el),
+    );
+    const standard = candidates.find(
+      (el) => el.autocomplete === "one-time-code",
+    );
+    if (standard) {
+      return standard;
+    }
+    candidates.sort((a, b) => visibilityScore(b) - visibilityScore(a));
+    return candidates[0] ?? null;
   }
 
   function findPasswordInput(allInputs) {
@@ -252,13 +309,18 @@
     "connexion",
     "compte",
     "courriel",
-    // Spanish — covers "usuario", "cuenta", "correo", "ingreso".
+    // Spanish — covers "usuario", "cuenta", "correo". "ingreso" is
+    // deliberately absent: as a noun it overwhelmingly labels income
+    // fields ("Ingresos mensuales") on financial forms, and the
+    // login-verb forms ("ingresar", "ingresá", "ingrese") don't
+    // contain the substring anyway — the hint would carry mostly
+    // false-positive weight.
     "usuario",
     "cuenta",
     "correo",
-    "ingreso",
-    // Italian — covers "utente", "accesso" (also matches "access" in
-    // English, intentionally).
+    // Italian — covers "utente" and "accesso". (English "access" is
+    // NOT matched by "accesso" — substring inclusion needs the
+    // haystack to contain the full hint, and "access" is shorter.)
     "utente",
     "accesso",
     // Portuguese — covers "usuário" and "acessar". `usuario` from
@@ -266,7 +328,90 @@
     "acessar",
   ];
 
+  // Veto terms: a candidate whose haystack matches a USERNAME_HINT
+  // but ALSO matches one of these is rejected. The hints are
+  // substring heuristics, and several of them collide with
+  // financial-form labels built on the same stem — German
+  // "Kontonummer" (bank account number) contains "konto", English
+  // "account number" contains "account", Spanish "número de cuenta"
+  // contains "cuenta". Filling a username into an IBAN or
+  // account-number field is the most damaging false positive this
+  // heuristic can produce, so number-ish and amount-ish words veto
+  // the match outright.
+  const USERNAME_VETO_HINTS = [
+    "number",
+    "nummer",
+    "numero",
+    "número",
+    "iban",
+    "amount",
+    "betrag",
+    "importe",
+    "importo",
+    "montant",
+  ];
+
   const USERNAME_TYPES = new Set(["text", "email", "tel", "url", ""]);
+
+  // Hints that an input is a one-time / 2FA code field. Kept deliberately
+  // tight and English-centric (HTML field names stay English even on
+  // localised sites): mis-filling a TOTP code into an unrelated field both
+  // fails the login and leaks the current code, so precision matters more
+  // than recall here. The web-standard `autocomplete="one-time-code"` is the
+  // strong primary signal handled in `findOtpInput`; these cover fields that
+  // predate or omit it. Bare `code` / `token` are excluded as too broad
+  // (coupon, area, zip, …).
+  const OTP_HINTS = [
+    "otp",
+    "totp",
+    "2fa",
+    "mfa",
+    "one-time",
+    "onetime",
+    "one_time",
+    "passcode",
+    "authenticator",
+    "authcode",
+    "auth-code",
+    "auth_code",
+    "verificationcode",
+    "verification-code",
+    "verification_code",
+    "securitycode",
+    "security-code",
+    "security_code",
+  ];
+
+  // OTP codes are short digit/alphanumeric strings, so the field is a text /
+  // tel / number input (never a password, which would mask the code).
+  const OTP_TYPES = new Set(["text", "tel", "number", ""]);
+
+  // Input types whose focus is worth remembering for the popup's
+  // frame-picking: everything a fill could target — username-capable
+  // types plus password fields.
+  const FILLABLE_FOCUS_TYPES = new Set([...USERNAME_TYPES, "password"]);
+
+  // Records when a fill-relevant input last held focus in this frame.
+  // `focusin` is composed, so focus changes inside open shadow roots
+  // bubble out — but the event is retargeted to the shadow HOST at
+  // the document level, so `composedPath()[0]` is needed to see the
+  // real inner input. Capture phase so a page calling
+  // `stopPropagation` in a bubble-phase listener can't blind us.
+  document.addEventListener(
+    "focusin",
+    (event) => {
+      // `composedPath()` is never empty inside a dispatched listener,
+      // so index 0 is always the (possibly shadow-inner) real target.
+      const [target] = event.composedPath();
+      if (
+        target instanceof HTMLInputElement &&
+        FILLABLE_FOCUS_TYPES.has(target.type.toLowerCase())
+      ) {
+        lastEditableFocusAt = Date.now();
+      }
+    },
+    true,
+  );
 
   function looksLikeUsername(el) {
     const type = el.type.toLowerCase();
@@ -291,7 +436,33 @@
       // usernames).
       return type !== "";
     }
-    return USERNAME_HINTS.some((hint) => haystack.includes(hint));
+    if (!USERNAME_HINTS.some((hint) => haystack.includes(hint))) {
+      return false;
+    }
+    return !USERNAME_VETO_HINTS.some((veto) => haystack.includes(veto));
+  }
+
+  function looksLikeOtp(el) {
+    const type = el.type.toLowerCase();
+    if (!OTP_TYPES.has(type)) {
+      return false;
+    }
+    // The web standard is authoritative on its own — a site that sets it has
+    // told the browser exactly what this field is for.
+    if (el.autocomplete === "one-time-code") {
+      return true;
+    }
+    const haystack = [
+      el.id,
+      el.name,
+      el.placeholder,
+      el.getAttribute("autocomplete"),
+      el.getAttribute("aria-label"),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return OTP_HINTS.some((hint) => haystack.includes(hint));
   }
 
   function isInteractable(el) {

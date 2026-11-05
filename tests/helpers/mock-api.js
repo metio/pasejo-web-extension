@@ -3,6 +3,40 @@
 
 import { vi } from "vitest";
 
+// The real English message catalog backs the mock's `i18n.getMessage`, so
+// tests assert the same strings the extension ships and stay in lockstep
+// with `_locales/en/messages.json` automatically. Vite resolves the JSON
+// import to the parsed object.
+import EN_MESSAGES from "../../src/_locales/en/messages.json";
+
+// Faithful re-implementation of `chrome.i18n.getMessage`: resolves named
+// `$PLACEHOLDER$` tokens against the entry's `placeholders` table, whose
+// `content` (`$1`, `$2`, …) indexes into the caller's substitution array.
+// Unknown keys return "" like the real API.
+function getMessage(key, substitutions) {
+  const entry = EN_MESSAGES[key];
+  if (!entry) {
+    return "";
+  }
+  const subs =
+    substitutions == null
+      ? []
+      : Array.isArray(substitutions)
+        ? substitutions
+        : [substitutions];
+  const placeholders = entry.placeholders ?? {};
+  return entry.message.replace(/\$([A-Za-z0-9_]+)\$/g, (match, name) => {
+    const placeholder = placeholders[name.toLowerCase()];
+    if (!placeholder) {
+      return match;
+    }
+    return placeholder.content.replace(
+      /\$(\d)/g,
+      (_, digit) => subs[Number(digit) - 1] ?? "",
+    );
+  });
+}
+
 // Builds a fresh in-memory mock of the WebExtensions `chrome` /
 // `browser` API surface that the extension touches. Each call returns a
 // brand-new mock so tests don't share state. The returned object is
@@ -11,6 +45,7 @@ import { vi } from "vitest";
 export function makeApiMock() {
   const onMessageListeners = [];
   const onConnectListeners = [];
+  const onAuthRequiredListeners = [];
   const ports = [];
   // Pairs created by `runtime.connect`: each entry holds the popup-
   // side port and the background-side port so a test can drive either
@@ -62,12 +97,43 @@ export function makeApiMock() {
     webNavigation: {
       getAllFrames: vi.fn(),
     },
+    webRequest: {
+      onAuthRequired: {
+        addListener: vi.fn((listener) => onAuthRequiredListeners.push(listener)),
+        listeners: onAuthRequiredListeners,
+      },
+    },
+    permissions: {
+      contains: vi.fn().mockResolvedValue(true),
+      request: vi.fn().mockResolvedValue(true),
+    },
+    i18n: {
+      getMessage: vi.fn(getMessage),
+    },
     // Inspection helpers (not on the real API surface).
     __ports: ports,
     __onMessageListeners: onMessageListeners,
     __onConnectListeners: onConnectListeners,
+    __onAuthRequiredListeners: onAuthRequiredListeners,
     __streamPairs: streamPairs,
   };
+}
+
+// Invokes the `webRequest.onAuthRequired` handler `background.js` registered
+// and resolves with whatever it produces — handling both wirings: Chromium's
+// `asyncBlocking` (the handler calls a callback) and Firefox's blocking form
+// (the handler returns a Promise).
+export function invokeAuthRequired(api, details) {
+  const [listener] = api.__onAuthRequiredListeners;
+  if (!listener) {
+    throw new Error("onAuthRequired listener was never registered");
+  }
+  return new Promise((resolve) => {
+    const returned = listener(details, resolve);
+    if (returned && typeof returned.then === "function") {
+      returned.then(resolve);
+    }
+  });
 }
 
 // Native-messaging Port stand-in. Captures the listeners the host code

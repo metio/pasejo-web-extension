@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "pasejo",
+  "default_locale": "en",
+  "name": "__MSG_extensionName__",
   "version": "0.1.0",
-  "description": "Fill credentials from an age-encrypted pasejo store",
+  "description": "__MSG_extensionDescription__",
   "author": "The pasejo Authors",
   "homepage_url": "https://github.com/metio/pasejo",
   "browser_specific_settings": {
@@ -39,7 +40,7 @@
         "default": "Ctrl+Shift+L",
         "mac": "Command+Shift+L"
       },
-      "description": "Open the pasejo popup"
+      "description": "__MSG_commandOpenPopup__"
     }
   },
   "content_scripts": [
@@ -54,6 +55,9 @@
     "activeTab",
     "nativeMessaging",
     "storage",
-    "webNavigation"
-  ]
+    "webNavigation",
+    "webRequest",
+    "webRequestBlocking"
+  ],
+  "host_permissions": ["<all_urls>"]
 }

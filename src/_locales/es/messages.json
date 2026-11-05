@@ -1,0 +1,249 @@
+{
+  "extensionName": {
+    "message": "pasejo",
+    "description": "Extension name shown in the browser's add-on list and toolbar."
+  },
+  "extensionDescription": {
+    "message": "Rellena credenciales desde un almacén pasejo cifrado con age",
+    "description": "Extension description shown in the browser's add-on list."
+  },
+  "commandOpenPopup": {
+    "message": "Abrir la ventana emergente de pasejo",
+    "description": "Description of the keyboard command that opens the popup."
+  },
+  "permissionBannerText": {
+    "message": "pasejo necesita permiso para acceder a las páginas antes de poder rellenar credenciales.",
+    "description": "Firefox-only banner explaining why host permission is required."
+  },
+  "grantAccessButton": {
+    "message": "Conceder acceso",
+    "description": "Button that requests the missing host permission."
+  },
+  "storeLabel": {
+    "message": "Almacén",
+    "description": "Label and accessible name for the store-selector dropdown."
+  },
+  "refreshButton": {
+    "message": "Actualizar",
+    "description": "Button that re-queries the host."
+  },
+  "refreshButtonTitle": {
+    "message": "Volver a consultar el host",
+    "description": "Tooltip for the Refresh button."
+  },
+  "basicAuthToggleLabel": {
+    "message": "Rellenar automáticamente las solicitudes de autenticación básica HTTP cuando exactamente una credencial almacenada coincide con el sitio",
+    "description": "Label for the opt-in HTTP basic-auth setting."
+  },
+  "allStoresOption": {
+    "message": "Todos los almacenes",
+    "description": "Dropdown entry that fans a query out across every store."
+  },
+  "storeOptionDefault": {
+    "message": "$NAME$ (predeterminado)",
+    "description": "Dropdown entry marking the default store.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "matchBadgeUrl": {
+    "message": "url",
+    "description": "Badge shown when a match came from a URL field."
+  },
+  "matchBadgeName": {
+    "message": "name",
+    "description": "Badge shown when a match came from the secret name."
+  },
+  "fillButton": {
+    "message": "Rellenar",
+    "description": "Button that fills a credential into the page."
+  },
+  "fillRowAriaLabel": {
+    "message": "Rellenar $NAME$",
+    "description": "Accessible label for a result row.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "otpLabel": {
+    "message": "OTP: $CODE$",
+    "description": "Read-only one-time code shown on a result row.",
+    "placeholders": { "code": { "content": "$1" } }
+  },
+  "storeInlineLabel": {
+    "message": "almacén: $NAME$",
+    "description": "Inline label showing which store a match came from.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusHostUnreachable": {
+    "message": "No se pudo contactar con el host: $ERROR$",
+    "description": "Shown when the native-messaging host cannot be reached.",
+    "placeholders": { "error": { "content": "$1" } }
+  },
+  "protocolUnknown": {
+    "message": "(desconocido)",
+    "description": "Placeholder for a host that reported no protocol version."
+  },
+  "statusProtocolMismatch": {
+    "message": "El host habla el protocolo $HOST$, la extensión habla el protocolo $EXTENSION$. Actualice el binario de pasejo o la extensión para que ambos extremos coincidan.",
+    "description": "Shown when the host and extension protocol versions differ.",
+    "placeholders": {
+      "host": { "content": "$1" },
+      "extension": { "content": "$2" }
+    }
+  },
+  "statusMalformedStores": {
+    "message": "Respuesta del host con formato incorrecto: `stores` no es un arreglo.",
+    "description": "Shown when the host's store list is not an array."
+  },
+  "statusMalformedResults": {
+    "message": "Respuesta del host con formato incorrecto: `results` no es un arreglo.",
+    "description": "Shown when the host's query results are not an array."
+  },
+  "statusHostReturnedError": {
+    "message": "El host devolvió $ERROR$.",
+    "description": "Fallback for an unrecognised host error kind.",
+    "placeholders": { "error": { "content": "$1" } }
+  },
+  "hostErrorHintSuffix": {
+    "message": " ($HINT$)",
+    "description": "Appends the host-supplied hint to an error message.",
+    "placeholders": { "hint": { "content": "$1" } }
+  },
+  "statusNoDomain": {
+    "message": "No hay dominio para la pestaña activa — no hay nada que buscar.",
+    "description": "Shown when the active tab has no host to search for."
+  },
+  "statusSearching": {
+    "message": "Buscando $DOMAIN$…",
+    "description": "Progress line for a single-store query.",
+    "placeholders": { "domain": { "content": "$1" } }
+  },
+  "statusSearchingProgress": {
+    "message": "Buscando $DOMAIN$… ($ANSWERED$/$TOTAL$ almacenes respondieron)",
+    "description": "Progress line for a multi-store query.",
+    "placeholders": {
+      "domain": { "content": "$1" },
+      "answered": { "content": "$2" },
+      "total": { "content": "$3" }
+    }
+  },
+  "statusNoStoresToSearch": {
+    "message": "No hay almacenes que buscar.",
+    "description": "Shown when a multi-store query has no stores."
+  },
+  "statusProtocolUnverified": {
+    "message": "Se rechaza la consulta multi-almacén: el protocolo del host aún no se ha verificado.",
+    "description": "Guard shown when the multi-store path runs before protocol verification."
+  },
+  "statusNoMatches": {
+    "message": "No hay coincidencias para $DOMAIN$.",
+    "description": "Shown when a query returns no matches.",
+    "placeholders": { "domain": { "content": "$1" } }
+  },
+  "statusNoMatchesSkipped": {
+    "message": "No hay coincidencias para $DOMAIN$ ($COUNT$ almacén(es) omitido(s): $NAMES$).",
+    "description": "Shown when a query returns no matches and some stores were skipped.",
+    "placeholders": {
+      "domain": { "content": "$1" },
+      "count": { "content": "$2" },
+      "names": { "content": "$3" }
+    }
+  },
+  "statusMatchesOne": {
+    "message": "$COUNT$ coincidencia.",
+    "description": "Shown when a query returns exactly one match.",
+    "placeholders": { "count": { "content": "$1" } }
+  },
+  "statusMatchesOther": {
+    "message": "$COUNT$ coincidencias.",
+    "description": "Shown when a query returns more than one match.",
+    "placeholders": { "count": { "content": "$1" } }
+  },
+  "statusSkippedSuffix": {
+    "message": " ($COUNT$ almacén(es) omitido(s): $NAMES$)",
+    "description": "Appended to the match-count line when some stores were skipped.",
+    "placeholders": {
+      "count": { "content": "$1" },
+      "names": { "content": "$2" }
+    }
+  },
+  "skippedNamesFallback": {
+    "message": "errores",
+    "description": "Stand-in for skipped store names when none are known."
+  },
+  "statusNoActiveTab": {
+    "message": "No hay ninguna pestaña activa que rellenar.",
+    "description": "Shown when there is no active tab to fill into."
+  },
+  "statusNoActiveTabMain": {
+    "message": "No hay ninguna pestaña activa.",
+    "description": "Shown when the popup opens with no active tab."
+  },
+  "noDomainPlaceholder": {
+    "message": "(sin dominio)",
+    "description": "Header placeholder when the active tab has no hostname."
+  },
+  "statusPageAccessGranted": {
+    "message": "Acceso a la página concedido. Vuelva a cargar las pestañas ya abiertas antes de rellenar.",
+    "description": "Shown after the user grants host permission."
+  },
+  "statusPageAccessRequestFailed": {
+    "message": "No se pudo solicitar el acceso a la página: $ERROR$",
+    "description": "Shown when requesting host permission fails.",
+    "placeholders": { "error": { "content": "$1" } }
+  },
+  "statusFilledOtpOnly": {
+    "message": "Se rellenó el código de un solo uso para $NAME$.",
+    "description": "Shown after filling only a one-time code (standalone 2FA step).",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilledUsernameOnly": {
+    "message": "Se rellenó el nombre de usuario para $NAME$ (no hay campo de contraseña en esta página).",
+    "description": "Shown after a partial fill (username only).",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilledUsernameOtp": {
+    "message": "Se rellenó el nombre de usuario y su código de un solo uso para $NAME$ (no hay campo de contraseña en esta página).",
+    "description": "Shown after a partial fill that also filled a one-time code.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilled": {
+    "message": "Se rellenó $NAME$.",
+    "description": "Shown after a successful username + password fill.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilledOtp": {
+    "message": "Se rellenó $NAME$ y su código de un solo uso.",
+    "description": "Shown after a fill that also filled a one-time code.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusNoFillablePassword": {
+    "message": "Ningún marco de la página tenía un campo de contraseña rellenable.",
+    "description": "Shown when no frame had a fillable password input."
+  },
+  "errorUnknownStore": {
+    "message": "El almacén seleccionado no existe en su configuración de pasejo.",
+    "description": "Host error: the requested store is not configured."
+  },
+  "errorNoStoreConfigured": {
+    "message": "No hay ningún almacén pasejo configurado. Ejecute `pasejo store add` primero.",
+    "description": "Host error: no store is configured at all."
+  },
+  "errorIdentityLocked": {
+    "message": "No se pudo descifrar el almacén. Añada la identidad age a ssh-agent — el host no puede solicitar una frase de contraseña.",
+    "description": "Host error: the store could not be decrypted."
+  },
+  "errorHookFailed": {
+    "message": "Un hook de pull de pasejo falló antes de poder leer el almacén. Revise el comando del hook y la red.",
+    "description": "Host error: a pull hook failed."
+  },
+  "errorStoreUnreachable": {
+    "message": "No se pudo abrir ni bloquear el archivo del almacén. Compruebe que existe y que tiene permiso de lectura.",
+    "description": "Host error: the store file could not be opened or locked."
+  },
+  "errorDecodeError": {
+    "message": "El host no pudo decodificar la solicitud. Actualice la extensión o el binario de pasejo.",
+    "description": "Host error: the request could not be decoded."
+  },
+  "errorResponseTooLarge": {
+    "message": "La respuesta para este almacén era demasiado grande para el límite de mensajería nativa del navegador. Reduzca los cuerpos de secretos muy grandes o acote la coincidencia.",
+    "description": "Host error: the reply exceeded the native-messaging size limit."
+  }
+}

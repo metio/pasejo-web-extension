@@ -172,13 +172,73 @@ describe("fill.js content script", () => {
     it("reports `focused: true` when document.hasFocus() is true", async () => {
       vi.spyOn(document, "hasFocus").mockReturnValue(true);
       const reply = await callListener(api, { type: "probe-focus" });
-      expect(reply).toEqual({ ok: true, focused: true });
+      expect(reply).toEqual({
+        ok: true,
+        focused: true,
+        lastEditableFocusAt: 0,
+      });
     });
 
     it("reports `focused: false` when document.hasFocus() is false", async () => {
       vi.spyOn(document, "hasFocus").mockReturnValue(false);
       const reply = await callListener(api, { type: "probe-focus" });
-      expect(reply).toEqual({ ok: true, focused: false });
+      expect(reply).toEqual({
+        ok: true,
+        focused: false,
+        lastEditableFocusAt: 0,
+      });
+    });
+
+    it("reports the focusin timestamp after a fill-relevant input received focus (review8 item C)", async () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(false);
+      vi.spyOn(Date, "now").mockReturnValue(1_234_567);
+      const password = makeVisibleInput("password");
+      password.dispatchEvent(
+        new FocusEvent("focusin", { bubbles: true, composed: true }),
+      );
+      const reply = await callListener(api, { type: "probe-focus" });
+      expect(reply.lastEditableFocusAt).toBe(1_234_567);
+    });
+
+    it("updates the timestamp for username-capable types too", async () => {
+      vi.spyOn(Date, "now").mockReturnValue(42_000);
+      const email = makeVisibleInput("email", { props: { name: "email" } });
+      email.dispatchEvent(
+        new FocusEvent("focusin", { bubbles: true, composed: true }),
+      );
+      const reply = await callListener(api, { type: "probe-focus" });
+      expect(reply.lastEditableFocusAt).toBe(42_000);
+    });
+
+    it("ignores focusin on inputs a fill would never target (checkbox)", async () => {
+      vi.spyOn(Date, "now").mockReturnValue(99_000);
+      const checkbox = makeVisibleInput("checkbox");
+      checkbox.dispatchEvent(
+        new FocusEvent("focusin", { bubbles: true, composed: true }),
+      );
+      const reply = await callListener(api, { type: "probe-focus" });
+      expect(reply.lastEditableFocusAt).toBe(0);
+    });
+
+    it("ignores focusin on non-input elements", async () => {
+      vi.spyOn(Date, "now").mockReturnValue(77_000);
+      const button = document.createElement("button");
+      document.body.appendChild(button);
+      button.dispatchEvent(
+        new FocusEvent("focusin", { bubbles: true, composed: true }),
+      );
+      const reply = await callListener(api, { type: "probe-focus" });
+      expect(reply.lastEditableFocusAt).toBe(0);
+    });
+
+    it("sees through open shadow roots via composedPath (the focusin target is retargeted to the host)", async () => {
+      vi.spyOn(Date, "now").mockReturnValue(55_000);
+      const { input } = attachShadowInput("password");
+      input.dispatchEvent(
+        new FocusEvent("focusin", { bubbles: true, composed: true }),
+      );
+      const reply = await callListener(api, { type: "probe-focus" });
+      expect(reply.lastEditableFocusAt).toBe(55_000);
     });
 
     it("does not mutate the DOM (probe is read-only)", async () => {
@@ -222,7 +282,7 @@ describe("fill.js content script", () => {
       });
       expect(reply).toEqual({
         ok: true,
-        filled: { username: true, password: true },
+        filled: { username: true, password: true, otp: false },
       });
       expect(username.value).toBe("alice");
       expect(password.value).toBe("hunter2");
@@ -236,7 +296,7 @@ describe("fill.js content script", () => {
         type: "fill",
         password: "hunter2",
       });
-      expect(reply.filled).toEqual({ username: false, password: true });
+      expect(reply.filled).toEqual({ username: false, password: true, otp: false });
       expect(password.value).toBe("hunter2");
     });
 
@@ -255,6 +315,94 @@ describe("fill.js content script", () => {
     });
   });
 
+  describe("OTP autofill", () => {
+    it("fills a one-time-code field alongside username and password", async () => {
+      document.body.innerHTML = "<form id='f'></form>";
+      const form = document.getElementById("f");
+      const username = makeVisibleInput("text", {
+        props: { id: "user" },
+        attached: false,
+      });
+      form.appendChild(username);
+      const password = makeVisibleInput("password", { attached: false });
+      form.appendChild(password);
+      const otp = makeVisibleInput("text", {
+        props: { autocomplete: "one-time-code" },
+        attached: false,
+      });
+      form.appendChild(otp);
+
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "hunter2",
+        otp: "123456",
+      });
+      expect(reply.filled).toEqual({
+        username: true,
+        password: true,
+        otp: true,
+      });
+      expect(otp.value).toBe("123456");
+    });
+
+    it("fills a standalone 2FA page that has only a one-time-code field", async () => {
+      const otp = makeVisibleInput("text", { props: { name: "otp" } });
+      const reply = await callListener(api, { type: "fill", otp: "654321" });
+      expect(reply.ok).toBe(true);
+      expect(reply.filled).toEqual({
+        username: false,
+        password: false,
+        otp: true,
+      });
+      expect(otp.value).toBe("654321");
+    });
+
+    it("fills a name-hinted OTP field when autocomplete is absent", async () => {
+      const otp = makeVisibleInput("tel", { props: { name: "totp_code" } });
+      const reply = await callListener(api, { type: "fill", otp: "999000" });
+      expect(reply.filled.otp).toBe(true);
+      expect(otp.value).toBe("999000");
+    });
+
+    it("does not fill an OTP field when the match carries no code", async () => {
+      makeVisibleInput("password");
+      const otp = makeVisibleInput("text", { props: { name: "otp" } });
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+      });
+      expect(reply.filled.otp).toBe(false);
+      expect(otp.value).toBe("");
+    });
+
+    it("reports otp:false when a code is supplied but the page has no OTP field", async () => {
+      makeVisibleInput("password");
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+        otp: "123456",
+      });
+      expect(reply.filled).toEqual({
+        username: false,
+        password: true,
+        otp: false,
+      });
+    });
+
+    it("does not mistake an unrelated code field (e.g. promo code) for a one-time code", async () => {
+      makeVisibleInput("password");
+      const promo = makeVisibleInput("text", { props: { name: "promocode" } });
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "hunter2",
+        otp: "123456",
+      });
+      expect(reply.filled.otp).toBe(false);
+      expect(promo.value).toBe("");
+    });
+  });
+
   describe("partial fill (multi-step login)", () => {
     it("returns password:false when only a username input exists and a username was supplied", async () => {
       const email = makeVisibleInput("email", {
@@ -266,7 +414,7 @@ describe("fill.js content script", () => {
         password: "hunter2",
       });
       expect(reply.ok).toBe(true);
-      expect(reply.filled).toEqual({ username: true, password: false });
+      expect(reply.filled).toEqual({ username: true, password: false, otp: false });
       expect(email.value).toBe("alice@example.com");
     });
 
@@ -436,7 +584,7 @@ describe("fill.js content script", () => {
         username: "alice",
         password: "p",
       });
-      expect(reply.filled).toEqual({ username: false, password: true });
+      expect(reply.filled).toEqual({ username: false, password: true, otp: false });
       expect(password.value).toBe("p");
     });
   });
@@ -456,7 +604,7 @@ describe("fill.js content script", () => {
         type: "fill",
         username: "alice",
       });
-      expect(reply.filled).toEqual({ username: true, password: false });
+      expect(reply.filled).toEqual({ username: true, password: false, otp: false });
       expect(a.value).toBe("alice");
       expect(b.value).toBe("");
     });
@@ -517,7 +665,6 @@ describe("fill.js content script", () => {
         { placeholder: "Usuario" }, // Spanish "user"
         { placeholder: "Cuenta" }, // Spanish "account"
         { placeholder: "Correo" }, // Spanish "email"
-        { placeholder: "Ingreso" }, // Spanish "log in"
         { placeholder: "Utente" }, // Italian "user"
         { placeholder: "Accesso" }, // Italian "access / log in"
         { placeholder: "Acessar" }, // Portuguese "to access"
@@ -555,6 +702,61 @@ describe("fill.js content script", () => {
       });
       expect(reply.filled.username).toBe(false);
       expect(phone.value).toBe("");
+    });
+
+    it("vetoes hint matches that also look like account-number / amount fields (review8 item F)", async () => {
+      // Each row is a financial-form label whose stem collides with a
+      // username hint: "Kontonummer" contains "konto", "Account
+      // number" contains "account", "Número de cuenta" contains
+      // "cuenta". Filling a username into an IBAN or income field is
+      // the costliest false positive the heuristic can produce, so a
+      // veto term in the haystack rejects the candidate outright.
+      const cases = [
+        { placeholder: "Kontonummer" }, // German bank account number
+        { placeholder: "Account number" }, // English
+        { placeholder: "Número de cuenta" }, // Spanish account number
+        { "attr:aria-label": "IBAN Konto" }, // explicit IBAN label
+        { placeholder: "Betrag vom Konto" }, // German amount-from-account
+        { placeholder: "Importo conto utente" }, // Italian amount field
+      ];
+      for (const props of cases) {
+        document.body.innerHTML = "";
+        const decoy = makeVisibleInput("text", { props });
+        const password = makeVisibleInput("password");
+        const reply = await callListener(api, {
+          type: "fill",
+          username: "alice",
+          password: "p",
+        });
+        expect(decoy.value).toBe(
+          "",
+          `expected ${JSON.stringify(props)} to be vetoed`,
+        );
+        expect(reply.filled.username).toBe(false);
+        expect(password.value).toBe("p");
+      }
+    });
+
+    it("still accepts the plain hint words the veto exists to protect (positive control for item F)", async () => {
+      const cases = [
+        { placeholder: "Konto" },
+        { placeholder: "Account" },
+        { placeholder: "Cuenta" },
+      ];
+      for (const props of cases) {
+        document.body.innerHTML = "";
+        const username = makeVisibleInput("text", { props });
+        const password = makeVisibleInput("password");
+        await callListener(api, {
+          type: "fill",
+          username: "alice",
+          password: "p",
+        });
+        expect(username.value).toBe(
+          "alice",
+          `expected ${JSON.stringify(props)} to stay accepted`,
+        );
+      }
     });
 
     it("accepts a plain `text` input even when the haystack is empty", async () => {
@@ -938,7 +1140,7 @@ describe("fill.js content script", () => {
         password: "hunter2",
       });
       expect(reply.ok).toBe(true);
-      expect(reply.filled).toEqual({ username: true, password: true });
+      expect(reply.filled).toEqual({ username: true, password: true, otp: false });
       expect(username.value).toBe("alice");
       expect(password.value).toBe("hunter2");
     });
@@ -953,7 +1155,7 @@ describe("fill.js content script", () => {
         password: "hunter2",
       });
       expect(reply.ok).toBe(true);
-      expect(reply.filled).toEqual({ username: true, password: false });
+      expect(reply.filled).toEqual({ username: true, password: false, otp: false });
       expect(email.value).toBe("alice@example.com");
     });
 
@@ -1029,7 +1231,7 @@ describe("fill.js content script", () => {
         password: "hunter2",
       });
       expect(reply.ok).toBe(true);
-      expect(reply.filled).toEqual({ username: true, password: false });
+      expect(reply.filled).toEqual({ username: true, password: false, otp: false });
       // Same single-walk property: no second deep walk for the
       // standalone-username search.
       expect(inputSelectorCalls(querySpy)).toEqual(["input"]);

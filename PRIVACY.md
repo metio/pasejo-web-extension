@@ -51,7 +51,7 @@ why each is needed:
 | `nativeMessaging` | Talk to the `pasejo browser host` process. |
 | `storage` | Persist the per-host store memory described above. |
 | `webNavigation` | Enumerate iframes inside the active tab so fill works on SSO / embedded-checkout pages whose login form lives in an iframe. Used only at fill time. |
-| `<all_urls>` (content scripts) | Inject the small fill helper into pages so it can write the username and password into the form when the user clicks *Fill*. The helper does nothing on its own — it waits for a message from the popup. |
+| `<all_urls>` (content scripts + host permission) | Inject the small fill helper into pages so it can write the username and password into the form when the user clicks *Fill*. The helper does nothing on its own — it waits for a message from the popup. Firefox keeps this permission OFF until you grant it (the popup shows a *Grant access* banner); Chromium grants it at install time. |
 
 ## Source
 

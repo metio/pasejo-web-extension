@@ -1,7 +1,14 @@
 // SPDX-FileCopyrightText: The pasejo Authors
 // SPDX-License-Identifier: 0BSD
 
-const { ERROR_COPY, PROTOCOL_VERSION, api } = globalThis.PASEJO;
+const {
+  ERROR_MESSAGE_IDS,
+  PROTOCOL_VERSION,
+  HOST_STORE_KEY,
+  coerceHostStoreMap,
+  api,
+  t,
+} = globalThis.PASEJO;
 
 const elements = {
   domain: document.getElementById("domain"),
@@ -9,6 +16,9 @@ const elements = {
   refresh: document.getElementById("refresh"),
   status: document.getElementById("status"),
   results: document.getElementById("results"),
+  permissionBanner: document.getElementById("permission-banner"),
+  grantPermissions: document.getElementById("grant-permissions"),
+  basicAuthToggle: document.getElementById("basic-auth-toggle"),
 };
 
 // Sentinel value the Store dropdown uses for "fan out the query across
@@ -167,7 +177,7 @@ async function loadStores() {
   try {
     reply = await sendBackground({ type: "list_stores" });
   } catch (err) {
-    setStatus(`Could not reach the host: ${err.message}`, "error");
+    setStatus(t("statusHostUnreachable", err.message), "error");
     return null;
   }
   if (reply.error) {
@@ -180,9 +190,11 @@ async function loadStores() {
     // single mention of "protocol" because the noun has already been
     // introduced.
     setStatus(
-      `Host speaks protocol ${reply.protocol_version ?? "(unknown)"}, ` +
-        `extension speaks protocol ${PROTOCOL_VERSION}. ` +
-        "Update the pasejo binary or the extension so both ends match.",
+      t(
+        "statusProtocolMismatch",
+        reply.protocol_version ?? t("protocolUnknown"),
+        PROTOCOL_VERSION,
+      ),
       "error",
     );
     return null;
@@ -192,7 +204,7 @@ async function loadStores() {
   // Guard here so a host that sent e.g. `{stores: "broken"}` doesn't
   // crash `pickPreferredStore` with a TypeError on `.some`.
   if (reply.stores !== undefined && !Array.isArray(reply.stores)) {
-    setStatus("Malformed host response: `stores` is not an array.", "error");
+    setStatus(t("statusMalformedStores"), "error");
     return null;
   }
   state.protocolOk = true;
@@ -213,7 +225,7 @@ function renderStores(stores, preferred) {
   if (stores.length > 1) {
     const all = document.createElement("option");
     all.value = ALL_STORES;
-    all.textContent = "All stores";
+    all.textContent = t("allStoresOption");
     elements.store.appendChild(all);
     if (preferred === ALL_STORES) {
       // Selectedness is flipped AFTER append so the option is part of
@@ -226,7 +238,9 @@ function renderStores(stores, preferred) {
   for (const entry of stores) {
     const option = document.createElement("option");
     option.value = entry.name;
-    option.textContent = entry.default ? `${entry.name} (default)` : entry.name;
+    option.textContent = entry.default
+      ? t("storeOptionDefault", entry.name)
+      : entry.name;
     // `<option title>` isn't honoured by every browser (Firefox renders
     // it on hover; Chrome may not) but where it works it lets the user
     // see the full name of a long store that the dropdown truncates.
@@ -288,8 +302,9 @@ async function pickPreferredStore(stores, hostname) {
 // Eviction order is derived from `lastUsedAt` rather than stored
 // explicitly: the LRU victim is whichever entry has the smallest
 // timestamp. Within-popup concurrent writes are serialised through
-// `hostStoreWriteQueue` below.
-const HOST_STORE_KEY = "pasejo:host-stores";
+// `hostStoreWriteQueue` below. `HOST_STORE_KEY` and its `coerceHostStoreMap`
+// validator come from `PASEJO` so the popup and the basic-auth recall read
+// the same key with the same shape.
 
 // Storage keys the popup wrote in earlier builds before the single-key
 // schema landed. The current code never reads them, so without a
@@ -347,32 +362,9 @@ async function reconcileLegacyStorage() {
 // whenever a new host is added.
 const MAX_REMEMBERED_HOSTS = 500;
 
-// Coerces an arbitrary value read from storage into a well-formed
-// `{[hostname]: {store, lastUsedAt}}` map. The storage layer hands back
-// whatever the previous writer put there, including values from a
-// crashed-mid-write or a manually-edited dev-tools session, so this
-// helper is the trust boundary that keeps the rest of the popup safe to
-// dereference. Anything that doesn't match the shape is dropped
-// silently; we'd rather lose one host's preference than refuse to
-// remember any new picks.
-function coerceHostStoreMap(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return {};
-  }
-  const out = {};
-  for (const [hostname, entry] of Object.entries(raw)) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-    const store = entry.store;
-    const lastUsedAt = entry.lastUsedAt;
-    if (typeof store !== "string" || typeof lastUsedAt !== "number") {
-      continue;
-    }
-    out[hostname] = { store, lastUsedAt };
-  }
-  return out;
-}
+// `coerceHostStoreMap` (the storage trust-boundary validator that drops
+// malformed entries) and `HOST_STORE_KEY` are destructured from `PASEJO`
+// above so the popup and the basic-auth recall share one definition.
 
 // LRU-trims `map` down to `cap` entries (oldest `lastUsedAt` first).
 // Returns the cleaned map and the hostnames that were evicted so the
@@ -444,22 +436,51 @@ async function rememberStoreForHost(hostname, storeName) {
   });
 }
 
+// Thin wrapper over the shared `PASEJO.recallStoreForHost` so the popup's
+// call site (and the exposed-for-tests name) stay unchanged while the recall
+// logic lives in one place that every feature reads.
 async function recallStoreForHost(hostname) {
-  if (!hostname || !api.storage?.local) {
-    return null;
+  return globalThis.PASEJO.recallStoreForHost(api, hostname);
+}
+
+// Reflect the stored basic-auth opt-in into the toggle. Guarded so the popup
+// still works in environments without the toggle element.
+async function loadBasicAuthSetting() {
+  if (!elements.basicAuthToggle) {
+    return;
   }
+  elements.basicAuthToggle.checked =
+    await globalThis.PASEJO.readBasicAuthEnabled(api);
+}
+
+// Persist the opt-in. Read-modify-write the settings object so any future
+// settings keys survive. Failure-tolerant: a storage error just means the
+// toggle doesn't stick this time.
+async function setBasicAuthEnabled(enabled) {
+  if (!api.storage?.local) {
+    return;
+  }
+  const key = globalThis.PASEJO.SETTINGS_KEY;
   try {
-    const result = await api.storage.local.get(HOST_STORE_KEY);
-    const map = coerceHostStoreMap(result[HOST_STORE_KEY]);
-    return map[hostname]?.store ?? null;
+    const result = await api.storage.local.get(key);
+    const existing = result[key];
+    const settings =
+      existing && typeof existing === "object" && !Array.isArray(existing)
+        ? { ...existing }
+        : {};
+    settings.basicAuth = enabled === true;
+    await api.storage.local.set({ [key]: settings });
   } catch (_) {
-    return null;
+    // Non-fatal — the toggle simply won't persist until storage works.
   }
 }
 
 function renderHostError(reply) {
-  const copy = ERROR_COPY[reply.error] ?? `Host returned ${reply.error}.`;
-  const hint = reply.hint ? ` (${reply.hint})` : "";
+  const messageId = ERROR_MESSAGE_IDS[reply.error];
+  const copy = messageId
+    ? t(messageId)
+    : t("statusHostReturnedError", reply.error);
+  const hint = reply.hint ? t("hostErrorHintSuffix", reply.hint) : "";
   setStatus(`${copy}${hint}`, "error");
   return null;
 }
@@ -472,7 +493,7 @@ async function runQuery() {
   const generation = ++state.queryGeneration;
   elements.results.replaceChildren();
   if (!state.domain) {
-    setStatus("No domain for the active tab — nothing to search.");
+    setStatus(t("statusNoDomain"));
     return;
   }
   if (state.store === ALL_STORES) {
@@ -490,7 +511,7 @@ async function runQuery() {
     if (generation !== state.queryGeneration) {
       return;
     }
-    setStatus(`Searching for ${state.domain}…`);
+    setStatus(t("statusSearching", state.domain));
   }, 250);
 
   try {
@@ -505,7 +526,7 @@ async function runQuery() {
       if (generation !== state.queryGeneration) {
         return;
       }
-      setStatus(`Could not reach the host: ${err.message}`, "error");
+      setStatus(t("statusHostUnreachable", err.message), "error");
       return;
     }
     if (generation !== state.queryGeneration) {
@@ -516,10 +537,7 @@ async function runQuery() {
       return;
     }
     if (reply.results !== undefined && !Array.isArray(reply.results)) {
-      setStatus(
-        "Malformed host response: `results` is not an array.",
-        "error",
-      );
+      setStatus(t("statusMalformedResults"), "error");
       return;
     }
     showMatches(reply.results ?? [], 0);
@@ -530,7 +548,7 @@ async function runQuery() {
 
 async function runMultiStoreQuery(generation) {
   if (state.stores.length === 0) {
-    setStatus("No stores to search.", "error");
+    setStatus(t("statusNoStoresToSearch"), "error");
     return;
   }
   if (!state.protocolOk) {
@@ -538,10 +556,7 @@ async function runMultiStoreQuery(generation) {
     // and it must have succeeded for the user to see "All stores" in
     // the dropdown. Belt-and-braces guard so a future refactor can't
     // route into the multi-store path without going through the gate.
-    setStatus(
-      "Refusing multi-store query: host protocol has not been verified yet.",
-      "error",
-    );
+    setStatus(t("statusProtocolUnverified"), "error");
     return;
   }
   const total = state.stores.length;
@@ -556,9 +571,7 @@ async function runMultiStoreQuery(generation) {
     // bump the generation. So this helper assumes the current
     // generation; the canonical stale-suppression check lives in
     // the stream consumer rather than at every status update site.
-    setStatus(
-      `Searching for ${state.domain}… (${answered}/${total} stores answered)`,
-    );
+    setStatus(t("statusSearchingProgress", state.domain, answered, total));
   };
   // Emit the initial progress line synchronously so the user sees
   // "0/N answered" before any reply lands, instead of staring at an
@@ -586,11 +599,11 @@ async function runMultiStoreQuery(generation) {
 
   await streamMultiStoreBatch(generation, (index, response) => {
     answered += 1;
-    // The stream consumer's gating contract guarantees indices
-    // within `[0, state.stores.length)` for the run we kicked off,
-    // but a misbehaving background that emitted a forged `result`
-    // with an out-of-bounds index would dereference `undefined.name`
-    // here without the optional-chaining + `store#N` fallback.
+    // The stream consumer bounds-checks `index`, so the entry lookup
+    // always lands inside `state.stores` — but `loadStores` doesn't
+    // validate per-entry shape, so an entry without a `name` (a
+    // malformed host roster) still needs the `store#N` placeholder
+    // for the skipped-stores line.
     const storeName = state.stores[index]?.name ?? `store#${index}`;
     if (
       response &&
@@ -663,6 +676,19 @@ function streamMultiStoreBatch(generation, onResult) {
         // Already disconnected.
       }
     };
+    // Keepalive against Chromium's MV3 service-worker idle reaper:
+    // each ping is an event that resets the worker's ~30 s idle
+    // deadline, so a batch waiting on a YubiKey touch can outlive it.
+    // The background drops post-`start` messages on this port
+    // silently. Cleared by `finish()` on every settlement path.
+    const keepalive = setInterval(() => {
+      try {
+        port.postMessage({ action: "keepalive" });
+      } catch (_) {
+        // Port already gone — the disconnect handler is about to
+        // finish() and clear this interval.
+      }
+    }, STREAM_KEEPALIVE_INTERVAL_MS);
     // Marks any store that never had a result message reported as a
     // transport failure and resolves the outer Promise. The for-loop
     // is idempotent (each slot can only be `settled.add`-ed once) and
@@ -671,6 +697,7 @@ function streamMultiStoreBatch(generation, onResult) {
     // (`done` message, `error` message, port disconnect) without an
     // explicit guard.
     const finish = () => {
+      clearInterval(keepalive);
       for (let i = 0; i < total; i += 1) {
         if (!settled.has(i)) {
           settled.add(i);
@@ -689,7 +716,12 @@ function streamMultiStoreBatch(generation, onResult) {
         return;
       }
       if (message.type === "result") {
-        if (!Number.isInteger(message.index) || settled.has(message.index)) {
+        if (
+          !Number.isInteger(message.index) ||
+          message.index < 0 ||
+          message.index >= total ||
+          settled.has(message.index)
+        ) {
           return;
         }
         settled.add(message.index);
@@ -742,22 +774,29 @@ function showMatches(matches, skippedCount, skippedNames) {
   if (matches.length === 0) {
     if (skippedCount > 0) {
       setStatus(
-        `No matches for ${state.domain} (${skippedCount} store(s) skipped: ${
-          skippedNames?.join(", ") ?? "errors"
-        }).`,
+        t(
+          "statusNoMatchesSkipped",
+          state.domain,
+          skippedCount,
+          skippedNames?.join(", ") ?? t("skippedNamesFallback"),
+        ),
         "error",
       );
     } else {
-      setStatus(`No matches for ${state.domain}.`);
+      setStatus(t("statusNoMatches", state.domain));
     }
     return;
   }
-  const noun = matches.length === 1 ? "match" : "matches";
-  let line = `${matches.length} ${noun}.`;
+  let line =
+    matches.length === 1
+      ? t("statusMatchesOne", matches.length)
+      : t("statusMatchesOther", matches.length);
   if (skippedCount > 0) {
-    line += ` (${skippedCount} store(s) skipped: ${
-      skippedNames?.join(", ") ?? "errors"
-    })`;
+    line += t(
+      "statusSkippedSuffix",
+      skippedCount,
+      skippedNames?.join(", ") ?? t("skippedNamesFallback"),
+    );
   }
   setStatus(line);
   for (const match of matches) {
@@ -774,7 +813,7 @@ function renderMatch(match) {
   // had to Tab to the inner Fill button.
   item.tabIndex = 0;
   item.setAttribute("role", "button");
-  item.setAttribute("aria-label", `Fill ${match.name}`);
+  item.setAttribute("aria-label", t("fillRowAriaLabel", match.name));
   item.addEventListener("click", () => fillIntoActiveTab(match));
   item.addEventListener("keydown", (event) => {
     // Pressing Enter/Space on the inner Fill button generates a
@@ -802,13 +841,14 @@ function renderMatch(match) {
   primary.appendChild(name);
   const kind = document.createElement("span");
   kind.className = "badge";
-  kind.textContent = match.match_kind === "url_field" ? "url" : "name";
+  kind.textContent =
+    match.match_kind === "url_field" ? t("matchBadgeUrl") : t("matchBadgeName");
   primary.appendChild(kind);
   item.appendChild(primary);
 
   const actions = document.createElement("div");
   actions.className = "actions";
-  actions.appendChild(button("Fill", () => fillIntoActiveTab(match)));
+  actions.appendChild(button(t("fillButton"), () => fillIntoActiveTab(match)));
   item.appendChild(actions);
 
   const secondary = document.createElement("div");
@@ -821,12 +861,12 @@ function renderMatch(match) {
   if (match.otp) {
     const otp = document.createElement("span");
     otp.className = "otp";
-    otp.textContent = `OTP: ${match.otp}`;
+    otp.textContent = t("otpLabel", match.otp);
     secondary.appendChild(otp);
   }
   if (match.store) {
     const store = document.createElement("span");
-    store.textContent = `store: ${match.store}`;
+    store.textContent = t("storeInlineLabel", match.store);
     secondary.appendChild(store);
   }
   item.appendChild(secondary);
@@ -860,7 +900,7 @@ async function fillIntoActiveTab(match) {
   // Re-querying makes Fill always act on whatever the user can see.
   const tab = await loadActiveTab();
   if (!tab) {
-    setStatus("No active tab to fill.", "error");
+    setStatus(t("statusNoActiveTab"), "error");
     state.filling = false;
     return;
   }
@@ -868,6 +908,9 @@ async function fillIntoActiveTab(match) {
     type: "fill",
     username: match.username,
     password: match.password,
+    // Undefined when the match has no OTP; the content script treats a
+    // missing/empty code as "nothing to fill".
+    otp: match.otp,
   };
   const reply = await fillAcrossFrames(tab.id, payload);
   if (reply.ok) {
@@ -878,11 +921,25 @@ async function fillIntoActiveTab(match) {
     // page loads.
     const partial =
       reply.filled?.password === false && reply.filled?.username === true;
-    setStatus(
-      partial
-        ? `Filled username for ${match.name} (no password field on this page).`
-        : `Filled ${match.name}.`,
-    );
+    // A standalone 2FA step: only the one-time code field was present.
+    const onlyOtp =
+      reply.filled?.otp &&
+      !reply.filled?.username &&
+      !reply.filled?.password;
+    const withOtp = Boolean(reply.filled?.otp) && !onlyOtp;
+    let message;
+    if (onlyOtp) {
+      message = t("statusFilledOtpOnly", match.name);
+    } else if (partial) {
+      message = withOtp
+        ? t("statusFilledUsernameOtp", match.name)
+        : t("statusFilledUsernameOnly", match.name);
+    } else {
+      message = withOtp
+        ? t("statusFilledOtp", match.name)
+        : t("statusFilled", match.name);
+    }
+    setStatus(message);
     // Give the user a moment to read the success line before the popup
     // disappears. Without the delay the status flashes too briefly to
     // notice when the close races the paint. Partial fills get a
@@ -896,10 +953,7 @@ async function fillIntoActiveTab(match) {
     setTimeout(() => window.close(), partial ? 1500 : 600);
     return;
   }
-  setStatus(
-    "No frame on the page had a fillable password input.",
-    "error",
-  );
+  setStatus(t("statusNoFillablePassword"), "error");
   // Failure path: re-enable so the user can try a different match.
   state.filling = false;
 }
@@ -947,44 +1001,84 @@ async function fillAcrossFrames(tabId, payload) {
   return { ok: false };
 }
 
-// Returns the frameId of the first frame that reports focus, or null
-// if none do (or all probes fail). Probes the top frame (frameId 0)
-// first — the common case for a typical login page is "the user is
-// already typing into the top frame", and answering yes after one
-// round-trip beats fanning out N parallel probes only to land on the
-// same answer. When the top frame doesn't report focus (or isn't in
-// the surviving-frames list at all — Refresh on an SSO iframe page)
-// we fall through to the parallel probe of the remaining frames so
-// finding the answer still costs roughly one round-trip rather than
-// N sequential ones.
+// Interval for the keepalive ping the popup sends on the stream port
+// while a multi-store batch is in flight. Chromium's MV3 service
+// worker is reaped after ~30 s without events; a batch whose only
+// outstanding work is a YubiKey-blocked decrypt generates none while
+// it waits, and a reaped worker drops both ports — the user would
+// see "background closed the stream" instead of the intended
+// per-request timeout. Each ping resets the idle clock. 20 s leaves
+// a comfortable margin under the 30 s deadline; the background
+// drops post-`start` messages silently, so the ping needs no
+// protocol handling on the other side.
+const STREAM_KEEPALIVE_INTERVAL_MS = 20_000;
+
+// How far back an editable-focus timestamp still counts as "the user
+// was just typing there". Long enough to survive the popup-open
+// pause and a glance at the results list; short enough that a field
+// the user abandoned minutes ago doesn't outvote the default
+// top-first fill order.
+const EDITABLE_FOCUS_RECENCY_MS = 60_000;
+
+// Picks the frame the user most plausibly intends to fill, or null
+// when nothing stands out (callers then walk frames top-first). One
+// parallel probe wave to every frame; each reply carries two signals:
+//
+// * `focused` — `document.hasFocus()`. Nearly always false in
+//   production because the probe runs while the extension popup
+//   itself holds the window focus; honoured anyway since it's free
+//   and authoritative when a browser does report it.
+// * `lastEditableFocusAt` — when a fill-relevant input in that frame
+//   last received focus. This is the real signal: "the frame the
+//   user was typing in BEFORE opening the popup". The most recent
+//   one within `EDITABLE_FOCUS_RECENCY_MS` wins.
 async function findFocusedFrame(tabId, frames) {
   if (frames.length === 0) {
     return null;
   }
-  const probeFrame = async (frameId) => {
-    try {
-      const reply = await api.tabs.sendMessage(
-        tabId,
-        { type: "probe-focus" },
-        { frameId },
-      );
-      return reply?.ok && reply.focused === true ? frameId : null;
-    } catch (_) {
-      return null;
+  const probes = await Promise.all(
+    frames.map(async (frameId) => {
+      try {
+        const reply = await api.tabs.sendMessage(
+          tabId,
+          { type: "probe-focus" },
+          { frameId },
+        );
+        if (!reply?.ok) {
+          return null;
+        }
+        return {
+          frameId,
+          focused: reply.focused === true,
+          lastEditableFocusAt:
+            typeof reply.lastEditableFocusAt === "number"
+              ? reply.lastEditableFocusAt
+              : 0,
+        };
+      } catch (_) {
+        return null;
+      }
+    }),
+  );
+  const replies = probes.filter((p) => p !== null);
+  const focused = replies.find((r) => r.focused);
+  if (focused) {
+    return focused.frameId;
+  }
+  const now = Date.now();
+  let best = null;
+  for (const reply of replies) {
+    if (reply.lastEditableFocusAt <= 0) {
+      continue;
     }
-  };
-  if (frames.includes(0)) {
-    const top = await probeFrame(0);
-    if (top !== null) {
-      return top;
+    if (now - reply.lastEditableFocusAt > EDITABLE_FOCUS_RECENCY_MS) {
+      continue;
+    }
+    if (best === null || reply.lastEditableFocusAt > best.lastEditableFocusAt) {
+      best = reply;
     }
   }
-  const remaining = frames.filter((f) => f !== 0);
-  if (remaining.length === 0) {
-    return null;
-  }
-  const probes = await Promise.all(remaining.map(probeFrame));
-  return probes.find((f) => f !== null) ?? null;
+  return best === null ? null : best.frameId;
 }
 
 async function listFrames(tabId) {
@@ -1052,30 +1146,92 @@ async function refreshStoresAndQuery() {
   await runQuery();
 }
 
+// The origins the content script needs before it can fill anything.
+// Firefox MV3 treats content-script match patterns as OPTIONAL host
+// permissions that default to OFF — without the grant, fill.js never
+// injects and every fill fails with a misleading "no fillable input"
+// error. Chromium grants statically-declared content scripts at
+// install, so `permissions.contains` reports true there and the
+// banner stays hidden.
+const PAGE_ACCESS_ORIGINS = Object.freeze({ origins: ["<all_urls>"] });
+
+// Reports whether the content script's origins are granted. Errs on
+// the side of "granted": a missing `permissions` API or a throwing
+// `contains` must not block the popup's main flow — the worst case of
+// a wrong `true` is the pre-banner status quo (a generic fill error).
+async function checkPageAccess() {
+  if (!api.permissions?.contains) {
+    return true;
+  }
+  try {
+    return await api.permissions.contains(PAGE_ACCESS_ORIGINS);
+  } catch (_) {
+    return true;
+  }
+}
+
+// Shows the grant-access banner when the content script's origins are
+// not granted yet. Separate from `main`'s query pipeline so a slow
+// host cannot delay the banner and vice versa.
+async function revealPermissionBannerIfNeeded() {
+  const granted = await checkPageAccess();
+  if (!granted) {
+    elements.permissionBanner.hidden = false;
+  }
+}
+
 async function main() {
   const tab = await loadActiveTab();
   if (!tab) {
-    setStatus("No active tab.", "error");
+    setStatus(t("statusNoActiveTabMain"), "error");
     return;
   }
   state.domain = tab.hostname;
-  elements.domain.textContent = tab.hostname ?? "(no domain)";
-  // Legacy-storage cleanup runs in parallel with the main refresh
-  // pipeline so the popup-open latency stays bounded by the slower
-  // of the two — `refreshStoresAndQuery` already involves a native-
-  // messaging round-trip, against which the cleanup's one
-  // `storage.local.get(null)` is in the noise.
-  // `reconcileLegacyStorage` swallows its own errors so the popup
-  // keeps working when storage is unavailable; chaining it through
-  // `Promise.all` therefore can't fail the outer await.
-  await Promise.all([reconcileLegacyStorage(), refreshStoresAndQuery()]);
+  elements.domain.textContent = tab.hostname ?? t("noDomainPlaceholder");
+  // Legacy-storage cleanup and the permission check run in parallel
+  // with the main refresh pipeline so the popup-open latency stays
+  // bounded by the slowest of the three — `refreshStoresAndQuery`
+  // already involves a native-messaging round-trip, against which
+  // the other two are in the noise. Both helpers swallow their own
+  // errors, so chaining them through `Promise.all` can't fail the
+  // outer await.
+  await Promise.all([
+    reconcileLegacyStorage(),
+    revealPermissionBannerIfNeeded(),
+    loadBasicAuthSetting(),
+    refreshStoresAndQuery(),
+  ]);
 }
+
+// `permissions.request` must run inside a user gesture; the click
+// handler provides one. Content scripts only inject on page load, so
+// tabs that were already open when the grant happened need a reload
+// before a fill can reach them — the success status says so.
+elements.grantPermissions.addEventListener("click", async () => {
+  if (!api.permissions?.request) {
+    return;
+  }
+  try {
+    const granted = await api.permissions.request(PAGE_ACCESS_ORIGINS);
+    if (granted) {
+      elements.permissionBanner.hidden = true;
+      setStatus(t("statusPageAccessGranted"));
+    }
+  } catch (err) {
+    setStatus(t("statusPageAccessRequestFailed", err.message), "error");
+  }
+});
 
 elements.store.addEventListener("change", () => {
   state.store = readSelectedStore();
   // Fire-and-forget; the runQuery below doesn't depend on the write.
   rememberStoreForHost(state.domain, state.store);
   runQuery();
+});
+
+// Optional in environments without the toggle (e.g. the reduced test DOM).
+elements.basicAuthToggle?.addEventListener("change", () => {
+  setBasicAuthEnabled(elements.basicAuthToggle.checked);
 });
 
 // Debounced: a second click while a refresh is already in flight would
@@ -1097,4 +1253,22 @@ elements.refresh.addEventListener("click", async () => {
   }
 });
 
+// Replace the static UI text carried in `data-i18n*` attributes with the
+// localized copy. WebExtensions only substitute `__MSG_*__` tokens in the
+// manifest and CSS, never in HTML, so the popup's chrome is localized here
+// on load. Runs synchronously before `main` so the first paint is already
+// in the user's language.
+function localizeStaticDom(root = document) {
+  for (const el of root.querySelectorAll("[data-i18n]")) {
+    el.textContent = t(el.dataset.i18n);
+  }
+  for (const el of root.querySelectorAll("[data-i18n-title]")) {
+    el.title = t(el.dataset.i18nTitle);
+  }
+  for (const el of root.querySelectorAll("[data-i18n-aria-label]")) {
+    el.setAttribute("aria-label", t(el.dataset.i18nAriaLabel));
+  }
+}
+
+localizeStaticDom();
 main();

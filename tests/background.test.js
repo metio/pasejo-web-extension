@@ -11,7 +11,11 @@ import {
 } from "vitest";
 
 import { loadClassicScript } from "./helpers/load-script.js";
-import { invokeBackgroundListener, makeApiMock } from "./helpers/mock-api.js";
+import {
+  invokeAuthRequired,
+  invokeBackgroundListener,
+  makeApiMock,
+} from "./helpers/mock-api.js";
 
 // Returns the listener-captured port (created by the first
 // `connectNative` call) so a test can drive its messages /
@@ -56,6 +60,205 @@ describe("background.js", () => {
     delete globalThis.PASEJO;
     delete globalThis.browser;
     delete globalThis.chrome;
+  });
+
+  describe("basic-auth onAuthRequired", () => {
+    // `resolveBasicAuth` awaits two storage reads before opening the native
+    // port, so flush a few microtasks before reaching for the port.
+    const flush = async (n = 6) => {
+      for (let i = 0; i < n; i += 1) {
+        await Promise.resolve();
+      }
+    };
+
+    const SETTINGS_KEY = "pasejo:settings";
+    const HOST_STORE_KEY = "pasejo:host-stores";
+
+    function setStorage(settings, hostStores = {}) {
+      api.storage.local.get.mockImplementation((key) => {
+        if (key === SETTINGS_KEY) {
+          return Promise.resolve(
+            settings === undefined ? {} : { [SETTINGS_KEY]: settings },
+          );
+        }
+        if (key === HOST_STORE_KEY) {
+          return Promise.resolve({ [HOST_STORE_KEY]: hostStores });
+        }
+        return Promise.resolve({});
+      });
+    }
+
+    const challenge = (over = {}) => ({
+      url: "https://example.com/secret",
+      requestId: "req-1",
+      isProxy: false,
+      ...over,
+    });
+
+    const match = (over = {}) => ({
+      name: "x",
+      store: "s",
+      username: "alice",
+      password: "hunter2",
+      url: "https://example.com",
+      match_kind: "url_field",
+      score: 1.0,
+      fields: {},
+      ...over,
+    });
+
+    it("declines without querying when the opt-in is off", async () => {
+      setStorage({ basicAuth: false });
+      expect(await invokeAuthRequired(api, challenge())).toEqual({});
+      expect(api.runtime.connectNative).not.toHaveBeenCalled();
+    });
+
+    it("declines without querying when no settings are stored (default off)", async () => {
+      setStorage(undefined);
+      expect(await invokeAuthRequired(api, challenge())).toEqual({});
+      expect(api.runtime.connectNative).not.toHaveBeenCalled();
+    });
+
+    it("declines proxy auth without querying", async () => {
+      setStorage({ basicAuth: true });
+      expect(await invokeAuthRequired(api, challenge({ isProxy: true }))).toEqual(
+        {},
+      );
+      expect(api.runtime.connectNative).not.toHaveBeenCalled();
+    });
+
+    it("supplies the single confident credential when opted in", async () => {
+      setStorage({ basicAuth: true });
+      const result = invokeAuthRequired(api, challenge());
+      await flush();
+      lastConnectedPort(api).__emitMessage({ results: [match()] });
+      expect(await result).toEqual({
+        authCredentials: { username: "alice", password: "hunter2" },
+      });
+    });
+
+    it("declines when more than one credential matches the host", async () => {
+      setStorage({ basicAuth: true });
+      const result = invokeAuthRequired(api, challenge());
+      await flush();
+      lastConnectedPort(api).__emitMessage({
+        results: [
+          match({ username: "a", password: "1", score: 1.0 }),
+          match({ username: "b", password: "2", score: 0.9 }),
+        ],
+      });
+      expect(await result).toEqual({});
+    });
+
+    it("declines a weak name-only (0.5) match", async () => {
+      setStorage({ basicAuth: true });
+      const result = invokeAuthRequired(api, challenge());
+      await flush();
+      lastConnectedPort(api).__emitMessage({
+        results: [match({ score: 0.5, match_kind: "name" })],
+      });
+      expect(await result).toEqual({});
+    });
+
+    it("declines on a host error response", async () => {
+      setStorage({ basicAuth: true });
+      const result = invokeAuthRequired(api, challenge());
+      await flush();
+      lastConnectedPort(api).__emitMessage({ error: "identity_locked" });
+      expect(await result).toEqual({});
+    });
+
+    it("scopes the query to the store remembered for the host", async () => {
+      setStorage({ basicAuth: true }, {
+        "example.com": { store: "work", lastUsedAt: 1 },
+      });
+      const result = invokeAuthRequired(api, challenge());
+      await flush();
+      const port = lastConnectedPort(api);
+      const posted = port.postMessage.mock.calls.at(-1)?.[0];
+      expect(posted).toMatchObject({
+        action: "query",
+        domain: "example.com",
+        store: "work",
+      });
+      port.__emitMessage({ results: [] });
+      await result;
+    });
+
+    it("queries the default store (null) when no store is remembered", async () => {
+      setStorage({ basicAuth: true });
+      const result = invokeAuthRequired(api, challenge());
+      await flush();
+      const port = lastConnectedPort(api);
+      expect(port.postMessage.mock.calls.at(-1)?.[0]).toMatchObject({
+        domain: "example.com",
+        store: null,
+      });
+      port.__emitMessage({ results: [] });
+      await result;
+    });
+
+    it("declines (and never queries) for a URL with no host", async () => {
+      setStorage({ basicAuth: true });
+      // A `data:` URL parses but carries no hostname, so the host guard
+      // declines before any native query is opened.
+      expect(
+        await invokeAuthRequired(api, challenge({ url: "data:text/plain,hi" })),
+      ).toEqual({});
+      expect(api.runtime.connectNative).not.toHaveBeenCalled();
+    });
+
+    it("declines when the native request fails (the host port disconnects)", async () => {
+      setStorage({ basicAuth: true });
+      const result = invokeAuthRequired(api, challenge());
+      await flush();
+      const port = lastConnectedPort(api);
+      api.runtime.lastError = { message: "host crashed" };
+      port.__emitDisconnect();
+      expect(await result).toEqual({});
+    });
+
+    it("declines when the host reply carries no results array", async () => {
+      setStorage({ basicAuth: true });
+      const result = invokeAuthRequired(api, challenge());
+      await flush();
+      lastConnectedPort(api).__emitMessage({});
+      expect(await result).toEqual({});
+    });
+
+    it("declines on the second fire for the same request (the first credential was rejected)", async () => {
+      setStorage({ basicAuth: true });
+      // First fire supplies the single credential and remembers the request.
+      const first = invokeAuthRequired(api, challenge());
+      await flush();
+      lastConnectedPort(api).__emitMessage({ results: [match()] });
+      expect(await first).toEqual({
+        authCredentials: { username: "alice", password: "hunter2" },
+      });
+      // Re-firing the same requestId means our credential was rejected: the
+      // loop guard declines so the browser's own dialog can take over.
+      api.runtime.connectNative.mockClear();
+      expect(await invokeAuthRequired(api, challenge())).toEqual({});
+      expect(api.runtime.connectNative).not.toHaveBeenCalled();
+    });
+
+    it("clears the answered-challenge cache once it reaches the cap", async () => {
+      setStorage({ basicAuth: true });
+      // Supplying a credential remembers its requestId; fill the cache to the
+      // 256-entry cap so the next remember trips the bounded-set eviction.
+      for (let i = 0; i < 256; i += 1) {
+        const r = invokeAuthRequired(api, challenge({ requestId: `req-${i}` }));
+        await flush();
+        lastConnectedPort(api).__emitMessage({ results: [match()] });
+        await r;
+      }
+      const capped = invokeAuthRequired(api, challenge({ requestId: "req-cap" }));
+      await flush();
+      lastConnectedPort(api).__emitMessage({ results: [match()] });
+      expect(await capped).toEqual({
+        authCredentials: { username: "alice", password: "hunter2" },
+      });
+    });
   });
 
   describe("validateResponseShape", () => {
@@ -744,6 +947,23 @@ describe("background.js", () => {
       ).toHaveBeenCalled();
     });
 
+    it("query_multi_stream silently ignores keepalive pings on a started port (review8 item H)", () => {
+      const { messages } = openQueryStream(api, [
+        { domain: "a.test", store: "a" },
+      ]);
+      // The popup sends these periodically to reset Chromium's
+      // service-worker idle deadline. They carry no protocol meaning
+      // — the background must neither error nor re-dispatch.
+      api.__streamPairs.at(-1).popupPort.postMessage({
+        action: "keepalive",
+      });
+      expect(messages.filter((m) => m.type === "error")).toHaveLength(0);
+      expect(api.runtime.connectNative).toHaveBeenCalledTimes(1);
+      // The batch still settles normally afterwards.
+      lastConnectedPort(api).__emitMessage({ request_id: 1, results: [] });
+      expect(messages.at(-1)).toEqual({ type: "done" });
+    });
+
     it("query_multi_stream ignores a second `start` message on the same port", () => {
       const { messages } = openQueryStream(api, [
         { domain: "a.test", store: "a" },
@@ -1008,6 +1228,44 @@ describe("background.js", () => {
       const reply = await replyPromise;
       expect(reply.ok).toBe(true);
     });
+  });
+});
+
+describe("background.js basic-auth registration on Firefox (blocking webRequest)", () => {
+  let api;
+
+  beforeEach(() => {
+    delete globalThis.PASEJO;
+    delete globalThis.chrome;
+    api = makeApiMock();
+    // Firefox exposes `browser` (not `chrome`), which selects the blocking,
+    // Promise-returning onAuthRequired wiring rather than Chromium's
+    // asyncBlocking + callback form.
+    globalThis.browser = api;
+    loadClassicScript("src/protocol.js");
+    loadClassicScript("src/background.js");
+  });
+
+  afterEach(() => {
+    delete globalThis.PASEJO;
+    delete globalThis.browser;
+    delete globalThis.chrome;
+  });
+
+  it("registers a blocking listener that returns a Promise resolving to an auth result", async () => {
+    api.storage.local.get.mockResolvedValue({});
+    const [listener] = api.__onAuthRequiredListeners;
+    expect(listener).toBeTypeOf("function");
+    // The Firefox wiring takes no callback and returns the Promise directly.
+    const returned = listener({
+      url: "https://example.com/x",
+      requestId: "r1",
+      isProxy: false,
+    });
+    expect(returned).toBeInstanceOf(Promise);
+    // Opt-in defaults off, so it resolves to a decline without querying.
+    expect(await returned).toEqual({});
+    expect(api.runtime.connectNative).not.toHaveBeenCalled();
   });
 });
 

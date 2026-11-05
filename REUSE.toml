@@ -14,3 +14,15 @@ path = "icons/*.png"
 precedence = "override"
 SPDX-FileCopyrightText = "The pasejo Authors"
 SPDX-License-Identifier = "0BSD"
+
+[[annotations]]
+path = "src/_locales/**"
+precedence = "override"
+SPDX-FileCopyrightText = "The pasejo Authors"
+SPDX-License-Identifier = "0BSD"
+
+[[annotations]]
+path = "package-lock.json"
+precedence = "override"
+SPDX-FileCopyrightText = "The pasejo Authors"
+SPDX-License-Identifier = "0BSD"

@@ -22,6 +22,8 @@ const EXPOSED = [
   "LEGACY_HOST_KEY_PREFIX",
   "LEGACY_HOST_INDEX_KEY",
   "reconcileLegacyStorage",
+  "checkPageAccess",
+  "revealPermissionBannerIfNeeded",
   "truncateStatus",
   "setStatus",
   "sendBackground",
@@ -38,6 +40,8 @@ const EXPOSED = [
   "coerceHostStoreMap",
   "pruneMapToCap",
   "renderHostError",
+  "loadBasicAuthSetting",
+  "setBasicAuthEnabled",
   "runQuery",
   "runMultiStoreQuery",
   "showMatches",
@@ -198,6 +202,230 @@ describe("popup.js", () => {
     delete globalThis.browser;
     delete globalThis.chrome;
     document.body.innerHTML = "";
+  });
+
+  describe("static UI localization", () => {
+    // `localizeStaticDom` runs on load and resolves every `data-i18n*`
+    // attribute through `i18n.getMessage`. The mock returns the real
+    // English catalog, so the visible chrome ends up in the user's
+    // language (English here) and the call proves the seam was used.
+    it("localizes the data-i18n chrome through i18n.getMessage on load", async () => {
+      const { api, popup } = await setUp();
+      expect(api.i18n.getMessage).toHaveBeenCalledWith(
+        "grantAccessButton",
+        undefined,
+      );
+      expect(api.i18n.getMessage).toHaveBeenCalledWith(
+        "permissionBannerText",
+        undefined,
+      );
+      expect(api.i18n.getMessage).toHaveBeenCalledWith("storeLabel", undefined);
+      expect(api.i18n.getMessage).toHaveBeenCalledWith(
+        "refreshButtonTitle",
+        undefined,
+      );
+      expect(popup.elements.grantPermissions.textContent).toBe("Grant access");
+      expect(popup.elements.refresh.title).toBe("Re-query the host");
+      expect(popup.elements.store.getAttribute("aria-label")).toBe("Store");
+    });
+  });
+
+  describe("basic-auth opt-in toggle", () => {
+    const SETTINGS_KEY = "pasejo:settings";
+
+    it("reflects a stored opt-in into the toggle on load", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValue({
+        [SETTINGS_KEY]: { basicAuth: true },
+      });
+      await popup.loadBasicAuthSetting();
+      expect(popup.elements.basicAuthToggle.checked).toBe(true);
+    });
+
+    it("does nothing when the toggle element is absent", async () => {
+      const { popup } = await setUp();
+      const toggle = popup.elements.basicAuthToggle;
+      popup.elements.basicAuthToggle = null;
+      await expect(popup.loadBasicAuthSetting()).resolves.toBeUndefined();
+      popup.elements.basicAuthToggle = toggle;
+    });
+
+    it("persists the opt-in, merging into existing settings", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValue({
+        [SETTINGS_KEY]: { other: 1 },
+      });
+      await popup.setBasicAuthEnabled(true);
+      expect(api.storage.local.set).toHaveBeenCalledWith({
+        [SETTINGS_KEY]: { other: 1, basicAuth: true },
+      });
+    });
+
+    it("starts a fresh settings object when the stored value is not an object", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValue({ [SETTINGS_KEY]: "garbage" });
+      await popup.setBasicAuthEnabled(false);
+      expect(api.storage.local.set).toHaveBeenCalledWith({
+        [SETTINGS_KEY]: { basicAuth: false },
+      });
+    });
+
+    it("tolerates a storage failure while persisting", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockRejectedValue(new Error("nope"));
+      await expect(popup.setBasicAuthEnabled(true)).resolves.toBeUndefined();
+    });
+
+    it("returns early when no storage API is available", async () => {
+      const { api, popup } = await setUp();
+      const local = api.storage.local;
+      api.storage.local = undefined;
+      await expect(popup.setBasicAuthEnabled(true)).resolves.toBeUndefined();
+      expect(local.set).not.toHaveBeenCalled();
+      api.storage.local = local;
+    });
+
+    it("persists when the user flips the toggle", async () => {
+      const { api, popup } = await setUp();
+      api.storage.local.get.mockResolvedValue({});
+      popup.elements.basicAuthToggle.checked = true;
+      popup.elements.basicAuthToggle.dispatchEvent(new Event("change"));
+      await flushAsync();
+      expect(api.storage.local.set).toHaveBeenCalled();
+    });
+  });
+
+  describe("page-access permission banner (review8 item G)", () => {
+    // Firefox MV3 ships content-script match patterns as opt-in host
+    // permissions. The banner is the popup's discovery surface for
+    // the missing grant; without it the user only ever sees a generic
+    // "no fillable input" error.
+
+    it("stays hidden when the origins are already granted (Chromium / granted-Firefox)", async () => {
+      const { popup } = await setUp();
+      // setUp's default mock resolves `contains` with true and main()
+      // already ran during bootstrap.
+      expect(popup.elements.permissionBanner.hidden).toBe(true);
+    });
+
+    it("appears when permissions.contains reports the origins as not granted", async () => {
+      delete globalThis.PASEJO;
+      delete globalThis.chrome;
+      const api = makeApiMock();
+      api.tabs.query = vi
+        .fn()
+        .mockResolvedValue([{ id: 1, url: "https://example.com" }]);
+      api.runtime.sendMessage = vi.fn().mockResolvedValue({
+        ok: true,
+        response: {
+          protocol_version: 1,
+          stores: [{ name: "personal", default: true }],
+          results: [],
+        },
+      });
+      api.storage.local.get = vi.fn().mockResolvedValue({});
+      api.storage.local.set = vi.fn();
+      api.storage.local.remove = vi.fn();
+      api.permissions.contains = vi.fn().mockResolvedValue(false);
+      globalThis.chrome = api;
+      buildPopupDom(document);
+      loadClassicScript("src/protocol.js");
+      const popup = loadClassicScript("src/popup/popup.js", {
+        expose: EXPOSED,
+      });
+      await flushAsync();
+      await flushAsync();
+      expect(api.permissions.contains).toHaveBeenCalledWith({
+        origins: ["<all_urls>"],
+      });
+      expect(popup.elements.permissionBanner.hidden).toBe(false);
+    });
+
+    it("treats a missing permissions API as granted (banner stays hidden)", async () => {
+      delete globalThis.PASEJO;
+      delete globalThis.chrome;
+      const api = makeApiMock();
+      api.permissions = undefined;
+      api.tabs.query = vi
+        .fn()
+        .mockResolvedValue([{ id: 1, url: "https://example.com" }]);
+      api.runtime.sendMessage = vi.fn().mockResolvedValue({
+        ok: true,
+        response: {
+          protocol_version: 1,
+          stores: [{ name: "personal", default: true }],
+          results: [],
+        },
+      });
+      api.storage.local.get = vi.fn().mockResolvedValue({});
+      api.storage.local.set = vi.fn();
+      api.storage.local.remove = vi.fn();
+      globalThis.chrome = api;
+      buildPopupDom(document);
+      loadClassicScript("src/protocol.js");
+      const popup = loadClassicScript("src/popup/popup.js", {
+        expose: EXPOSED,
+      });
+      await flushAsync();
+      await flushAsync();
+      expect(popup.elements.permissionBanner.hidden).toBe(true);
+    });
+
+    it("treats a throwing permissions.contains as granted so the popup keeps working", async () => {
+      const { api, popup } = await setUp();
+      api.permissions.contains = vi
+        .fn()
+        .mockRejectedValue(new Error("api unavailable"));
+      await popup.revealPermissionBannerIfNeeded();
+      expect(popup.elements.permissionBanner.hidden).toBe(true);
+    });
+
+    it("requests the origins on click and hides the banner when granted", async () => {
+      const { api, popup } = await setUp();
+      popup.elements.permissionBanner.hidden = false;
+      api.permissions.request = vi.fn().mockResolvedValue(true);
+      popup.elements.grantPermissions.click();
+      await flushAsync();
+      expect(api.permissions.request).toHaveBeenCalledWith({
+        origins: ["<all_urls>"],
+      });
+      expect(popup.elements.permissionBanner.hidden).toBe(true);
+      // The reload caveat reaches the user: content scripts only
+      // inject on page load, so already-open tabs need a reload.
+      expect(popup.elements.status.textContent).toMatch(/Reload/);
+    });
+
+    it("keeps the banner when the user denies the request", async () => {
+      const { api, popup } = await setUp();
+      popup.elements.permissionBanner.hidden = false;
+      api.permissions.request = vi.fn().mockResolvedValue(false);
+      popup.elements.grantPermissions.click();
+      await flushAsync();
+      expect(popup.elements.permissionBanner.hidden).toBe(false);
+    });
+
+    it("surfaces a request failure in the status line", async () => {
+      const { api, popup } = await setUp();
+      popup.elements.permissionBanner.hidden = false;
+      api.permissions.request = vi
+        .fn()
+        .mockRejectedValue(new Error("gesture expired"));
+      popup.elements.grantPermissions.click();
+      await flushAsync();
+      expect(popup.elements.status.textContent).toMatch(
+        /Could not request page access: gesture expired/,
+      );
+      expect(popup.elements.permissionBanner.hidden).toBe(false);
+    });
+
+    it("click is a no-op when the permissions API is unavailable", async () => {
+      const { api, popup } = await setUp();
+      popup.elements.permissionBanner.hidden = false;
+      api.permissions = undefined;
+      expect(() => popup.elements.grantPermissions.click()).not.toThrow();
+      await flushAsync();
+      expect(popup.elements.permissionBanner.hidden).toBe(false);
+    });
   });
 
   describe("popup chrome / accessibility (item E)", () => {
@@ -2350,7 +2578,7 @@ describe("popup.js", () => {
       expect(popup.elements.status.textContent).toMatch(/1 match/);
     });
 
-    it("falls back to a `store#N` placeholder when the stream emits an out-of-bounds index (defensive)", async () => {
+    it("drops result messages whose index is out of bounds (review8 item I)", async () => {
       const { api, popup } = await setUp();
       popup.state.domain = "example.com";
       popup.state.store = popup.ALL_STORES;
@@ -2358,15 +2586,18 @@ describe("popup.js", () => {
       popup.state.stores = [{ name: "a" }];
       const queryDone = popup.runQuery();
       await flushAsync();
-      // index 7 is past the end of state.stores. The popup's
-      // `state.stores[index]?.name ?? "store#" + index` fallback
-      // produces a synthesized name rather than crashing on a null
-      // dereference, AND the slot still has to flow through `answered`
-      // accounting — otherwise the stream-end heuristic would mark
-      // the real store-0 as skipped a second time on disconnect.
+      // Indices outside `[0, total)` never reach the consumer: they
+      // would inflate the `answered` counter past `total` and push a
+      // phantom `store#N` into the skipped list. Negative and
+      // past-the-end values are both rejected at the stream layer.
       pushStreamReply(api, {
         type: "result",
         index: 7,
+        response: { error: "identity_locked" },
+      });
+      pushStreamReply(api, {
+        type: "result",
+        index: -1,
         response: { error: "identity_locked" },
       });
       // Real result for index 0 settles the legitimate slot.
@@ -2377,8 +2608,117 @@ describe("popup.js", () => {
       });
       pushStreamReply(api, { type: "done" });
       await queryDone;
-      // The skipped-store list includes the synthesized name.
-      expect(popup.elements.status.textContent).toMatch(/store#7/);
+      // Only the legitimate store is accounted for: one match, no
+      // phantom skipped entries.
+      expect(popup.elements.status.textContent).toBe("1 match.");
+      expect(popup.elements.status.textContent).not.toMatch(/store#/);
+    });
+
+    it("pings the stream port every 20 s while the batch is in flight and stops after done (review8 item H)", async () => {
+      const { api, popup } = await setUp();
+      vi.useFakeTimers();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }];
+      const queryDone = popup.runQuery();
+      await vi.advanceTimersByTimeAsync(0);
+      const pair = api.__streamPairs.at(-1);
+      const pings = () =>
+        pair.popupPort.postMessage.mock.calls.filter(
+          ([msg]) => msg?.action === "keepalive",
+        ).length;
+      expect(pings()).toBe(0);
+      // First keepalive fires before Chromium's ~30 s service-worker
+      // idle deadline would.
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(pings()).toBe(1);
+      // Settle the batch before the background's 30 s per-request
+      // timer fires (which would settle it for us and muddy the
+      // ping accounting).
+      pair.backgroundPort.postMessage({
+        type: "result",
+        index: 0,
+        response: { results: [] },
+      });
+      pair.backgroundPort.postMessage({ type: "done" });
+      await vi.advanceTimersByTimeAsync(0);
+      await queryDone;
+      // The interval is cleared on settlement — no pings pile up
+      // after the batch is done.
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(pings()).toBe(1);
+    });
+
+    it("swallows a keepalive postMessage throw when the port died between pings", async () => {
+      const { api, popup } = await setUp();
+      vi.useFakeTimers();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }];
+      let messageListener;
+      let postCount = 0;
+      api.runtime.connect = vi.fn(() => {
+        const port = {
+          name: "query_multi_stream",
+          onMessage: {
+            addListener: vi.fn((l) => {
+              messageListener = l;
+            }),
+          },
+          onDisconnect: { addListener: vi.fn() },
+          postMessage: vi.fn(() => {
+            postCount += 1;
+            // The `start` goes through; every later write (the
+            // keepalive) finds the port dead.
+            if (postCount > 1) {
+              throw new Error("port is gone");
+            }
+          }),
+          disconnect: vi.fn(),
+        };
+        api.__streamPairs.push({ popupPort: port, backgroundPort: port });
+        return port;
+      });
+      const queryDone = popup.runQuery();
+      await vi.advanceTimersByTimeAsync(0);
+      // The keepalive fires into the dead port and must not blow up
+      // the interval callback (an uncaught throw inside setInterval
+      // surfaces as an unhandled error in real browsers).
+      await vi.advanceTimersByTimeAsync(20_000);
+      // The batch can still settle normally through the message path.
+      messageListener({
+        type: "result",
+        index: 0,
+        response: { results: [] },
+      });
+      messageListener({ type: "done" });
+      await vi.advanceTimersByTimeAsync(0);
+      await queryDone;
+      expect(popup.elements.status.textContent).toMatch(/No matches/);
+    });
+
+    it("labels a nameless store entry as `store#N` in the skipped list", async () => {
+      const { api, popup } = await setUp();
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      // `loadStores` validates that `stores` is an array but not the
+      // per-entry shape — a malformed host roster can carry an entry
+      // with no `name`. The skipped-stores line falls back to a
+      // positional placeholder instead of printing "undefined".
+      popup.state.stores = [{}];
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      pushStreamReply(api, {
+        type: "result",
+        index: 0,
+        response: { error: "identity_locked" },
+      });
+      pushStreamReply(api, { type: "done" });
+      await queryDone;
+      expect(popup.elements.status.textContent).toMatch(/skipped: store#0/);
     });
 
     it("ignores stream messages that aren't well-formed objects", async () => {
@@ -2889,86 +3229,114 @@ describe("popup.js", () => {
       expect(reply).toBe(3);
     });
 
-    it("short-circuits after one round-trip when the top frame reports focused (item R)", async () => {
-      const { api, popup } = await setUp();
-      const calls = [];
+    // --- recency-based frame picking (review8 item C) ------------------
+    // `document.hasFocus()` is false on every frame while the popup
+    // holds the window focus, so the probe carries a second signal:
+    // when a fill-relevant input in that frame last received focus.
+    // The most recent within the recency window wins.
+
+    function stubProbeWithRecency(api, byFrame) {
       api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
         if (msg.type !== "probe-focus") {
           return Promise.resolve({ ok: false });
         }
-        calls.push(opts.frameId);
-        // Top frame says yes; everyone else would say no — but we
-        // expect no one else to be asked.
-        return Promise.resolve({
-          ok: true,
-          focused: opts.frameId === 0,
-        });
+        const reply = byFrame[opts.frameId];
+        if (reply === undefined) {
+          return Promise.resolve({
+            ok: true,
+            focused: false,
+            lastEditableFocusAt: 0,
+          });
+        }
+        return Promise.resolve({ ok: true, focused: false, ...reply });
       });
-      const reply = await popup.findFocusedFrame(7, [0, 1, 2, 3]);
-      expect(reply).toBe(0);
-      // Exactly one probe sent; the parallel broadcast was skipped.
-      expect(calls).toEqual([0]);
+    }
+
+    it("picks the frame whose editable field most recently held focus when no frame reports hasFocus (item C)", async () => {
+      const { api, popup } = await setUp();
+      // Pin the clock: other tests in this file spy Date.now with
+      // small constants and the spies survive across tests, so a
+      // relative `Date.now() - 30_000` could go negative and route
+      // through the wrong guard.
+      const now = 10_000_000;
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      stubProbeWithRecency(api, {
+        0: { lastEditableFocusAt: now - 30_000 },
+        1: { lastEditableFocusAt: now - 5_000 },
+        2: { lastEditableFocusAt: 0 },
+      });
+      const reply = await popup.findFocusedFrame(7, [0, 1, 2]);
+      expect(reply).toBe(1);
     });
 
-    it("falls through to a parallel probe of the rest when the top frame is not focused (item R)", async () => {
+    it("ignores editable-focus timestamps older than the recency window", async () => {
       const { api, popup } = await setUp();
-      const calls = [];
+      const now = 10_000_000;
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      stubProbeWithRecency(api, {
+        0: { lastEditableFocusAt: now - 120_000 },
+        1: { lastEditableFocusAt: now - 90_000 },
+      });
+      const reply = await popup.findFocusedFrame(7, [0, 1]);
+      expect(reply).toBeNull();
+    });
+
+    it("prefers an actual hasFocus=true frame over any recency timestamp", async () => {
+      const { api, popup } = await setUp();
+      const now = 10_000_000;
+      vi.spyOn(Date, "now").mockReturnValue(now);
       api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
         if (msg.type !== "probe-focus") {
           return Promise.resolve({ ok: false });
         }
-        calls.push(opts.frameId);
+        if (opts.frameId === 2) {
+          return Promise.resolve({
+            ok: true,
+            focused: true,
+            lastEditableFocusAt: 0,
+          });
+        }
         return Promise.resolve({
           ok: true,
-          focused: opts.frameId === 2,
+          focused: false,
+          lastEditableFocusAt: now - 1_000,
         });
       });
-      const reply = await popup.findFocusedFrame(7, [0, 1, 2, 3]);
+      const reply = await popup.findFocusedFrame(7, [0, 1, 2]);
       expect(reply).toBe(2);
-      // Top frame is probed first, alone, then the rest are probed
-      // in parallel. The first three calls captured are [0] (top
-      // alone), then [1, 2, 3] in some order from the parallel
-      // dispatch.
-      expect(calls[0]).toBe(0);
-      expect(calls.slice(1).sort((a, b) => a - b)).toEqual([1, 2, 3]);
     });
 
-    it("skips the top-frame pre-check when frameId 0 isn't in the surviving frames list", async () => {
+    it("ignores a non-numeric lastEditableFocusAt (defensive against a skewed content script)", async () => {
       const { api, popup } = await setUp();
-      const calls = [];
-      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
-        if (msg.type !== "probe-focus") {
-          return Promise.resolve({ ok: false });
-        }
-        calls.push(opts.frameId);
-        return Promise.resolve({
-          ok: true,
-          focused: opts.frameId === 5,
-        });
-      });
-      const reply = await popup.findFocusedFrame(7, [3, 5, 9]);
-      expect(reply).toBe(5);
-      // Frame 0 is not in the list (e.g. it was filtered out as
-      // about:blank). No pre-check round-trip; everyone goes in
-      // parallel.
-      expect(calls.sort((a, b) => a - b)).toEqual([3, 5, 9]);
-    });
-
-    it("returns null without any probe when frame 0 is the only entry and it is not focused", async () => {
-      const { api, popup } = await setUp();
-      const calls = [];
-      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
-        if (msg.type !== "probe-focus") {
-          return Promise.resolve({ ok: false });
-        }
-        calls.push(opts.frameId);
-        return Promise.resolve({ ok: true, focused: false });
+      stubProbeWithRecency(api, {
+        0: { lastEditableFocusAt: "yesterday" },
       });
       const reply = await popup.findFocusedFrame(7, [0]);
       expect(reply).toBeNull();
-      // The top-frame pre-check fired once; there's no remaining
-      // list to broadcast to, so no second wave of probes.
-      expect(calls).toEqual([0]);
+    });
+
+    it("probes every frame in one parallel wave (no sequential pre-check)", async () => {
+      const { api, popup } = await setUp();
+      const calls = [];
+      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
+        if (msg.type !== "probe-focus") {
+          return Promise.resolve({ ok: false });
+        }
+        calls.push(opts.frameId);
+        return Promise.resolve({
+          ok: true,
+          focused: false,
+          lastEditableFocusAt: 0,
+        });
+      });
+      const reply = await popup.findFocusedFrame(7, [0, 1, 2, 3]);
+      expect(reply).toBeNull();
+      // Every frame is asked exactly once. The previous top-frame
+      // pre-check optimised for a hasFocus=true answer that never
+      // happens in production (the popup holds the focus), so it
+      // only added a sequential round-trip — superseded by the
+      // recency-signal design.
+      expect(calls.sort((a, b) => a - b)).toEqual([0, 1, 2, 3]);
     });
   });
 
@@ -3023,6 +3391,73 @@ describe("popup.js", () => {
         password: "p",
       });
       expect(popup.elements.status.textContent).toBe("Filled alice.");
+    });
+
+    it("notes the one-time code in the success message of a full fill", async () => {
+      const { api, popup } = await setUp();
+      api.tabs.query.mockResolvedValueOnce([
+        { id: 1, url: "https://x.test" },
+      ]);
+      api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
+      stubProbeAndFill(api, {
+        byFrame: {
+          0: { ok: true, filled: { username: true, password: true, otp: true } },
+        },
+      });
+      await popup.fillIntoActiveTab({
+        name: "alice",
+        username: "alice",
+        password: "p",
+        otp: "123456",
+      });
+      expect(popup.elements.status.textContent).toBe(
+        "Filled alice and its one-time code.",
+      );
+    });
+
+    it("notes the one-time code in the partial-fill (username-only) message", async () => {
+      const { api, popup } = await setUp();
+      api.tabs.query.mockResolvedValueOnce([
+        { id: 1, url: "https://x.test" },
+      ]);
+      api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
+      stubProbeAndFill(api, {
+        byFrame: {
+          0: {
+            ok: true,
+            filled: { username: true, password: false, otp: true },
+          },
+        },
+      });
+      await popup.fillIntoActiveTab({
+        name: "alice",
+        username: "alice",
+        otp: "123456",
+      });
+      expect(popup.elements.status.textContent).toMatch(
+        /Filled username and its one-time code for alice/,
+      );
+      expect(popup.elements.status.textContent).toMatch(/no password field/);
+    });
+
+    it("reports a standalone 2FA fill (one-time code only)", async () => {
+      const { api, popup } = await setUp();
+      api.tabs.query.mockResolvedValueOnce([
+        { id: 1, url: "https://x.test" },
+      ]);
+      api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
+      stubProbeAndFill(api, {
+        byFrame: {
+          0: {
+            ok: true,
+            filled: { username: false, password: false, otp: true },
+          },
+        },
+      });
+      await popup.fillIntoActiveTab({ name: "alice", otp: "123456" });
+      expect(popup.elements.status.textContent).toBe(
+        "Filled the one-time code for alice.",
+      );
     });
 
     it("renders the generic 'no fillable input' error when every frame says ok:false", async () => {

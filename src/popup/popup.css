@@ -46,6 +46,42 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Long hostnames must truncate on the LEFT so the registrable
+     domain stays visible: `…cloud.example.com` tells the user which
+     site they're filling; `service.region.cloud…` does not.
+     `direction: rtl` flips which end the ellipsis lands on;
+     `unicode-bidi: plaintext` keeps the characters rendering in
+     their natural left-to-right order so the hostname itself does
+     not display reversed. */
+  direction: rtl;
+  unicode-bidi: plaintext;
+  text-align: right;
+}
+
+.permission-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, AccentColor 12%, transparent);
+  font-size: 12px;
+}
+
+.permission-banner[hidden] {
+  display: none;
+}
+
+.permission-banner button {
+  font: inherit;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
 .controls {

@@ -13,7 +13,8 @@ try {
   // Firefox event page: protocol.js was loaded by the manifest already.
 }
 
-const { NATIVE_HOST, ACTION, api } = globalThis.PASEJO;
+const { NATIVE_HOST, ACTION, recallStoreForHost, readBasicAuthEnabled, api } =
+  globalThis.PASEJO;
 
 // Upper bound on how long we wait for a single host response before
 // giving up. The host's slowest legitimate path is a pull hook that
@@ -500,10 +501,12 @@ api.runtime.onConnect.addListener((streamPort) => {
   let started = false;
   streamPort.onMessage.addListener((message) => {
     if (started) {
-      // The contract is one `start` per port. A second `start` from
-      // the same port is the caller's bug — drop it rather than
-      // re-arming the fan-out, which would double-spawn the native
-      // host and orphan the first batch's replies.
+      // Post-`start` traffic is dropped. This covers two cases: the
+      // popup's periodic `{action:"keepalive"}` pings (sent purely to
+      // reset Chromium's service-worker idle deadline — receiving the
+      // message IS the desired effect), and a buggy second `start`,
+      // which must not re-arm the fan-out and double-spawn the
+      // native host.
       return;
     }
     if (!message || typeof message !== "object" || message.action !== "start") {
@@ -524,3 +527,130 @@ api.runtime.onConnect.addListener((streamPort) => {
     streamNativeBatch(streamPort, requests);
   });
 });
+
+// --- HTTP basic-auth auto-fill (opt-in) ------------------------------------
+//
+// On an HTTP authentication challenge (a 401 server response), if the user
+// opted in AND exactly one confident credential matches the host, supply it;
+// otherwise the browser's own auth dialog appears. The lookup honours the
+// per-host remembered store like every other feature, and never guesses among
+// multiple passwords — a blocking auth challenge has no UI to disambiguate.
+
+// Only URL-field matches (exact host 1.0 / registrable-domain 0.9) are strong
+// enough to auto-send a password; the 0.5 secret-name path fallback is not.
+const BASIC_AUTH_MIN_SCORE = 0.9;
+
+// Pure: the single confident credential to supply, or null to decline.
+function selectBasicAuthCredential(results) {
+  if (!Array.isArray(results)) {
+    return null;
+  }
+  const confident = results.filter(
+    (match) =>
+      match &&
+      typeof match.username === "string" &&
+      typeof match.password === "string" &&
+      typeof match.score === "number" &&
+      match.score >= BASIC_AUTH_MIN_SCORE,
+  );
+  if (confident.length !== 1) {
+    return null;
+  }
+  return { username: confident[0].username, password: confident[0].password };
+}
+
+// Auth challenges we've already answered once. A rejected credential makes the
+// browser re-fire onAuthRequired for the same requestId; answering again with
+// the same wrong password would loop, so a second fire declines to the native
+// dialog. Capped so a never-re-fired (accepted) entry can't grow the set
+// without bound across a long-lived service worker.
+const answeredAuthChallenges = new Set();
+const MAX_ANSWERED_CHALLENGES = 256;
+
+function rememberAnsweredChallenge(requestId) {
+  if (answeredAuthChallenges.size >= MAX_ANSWERED_CHALLENGES) {
+    answeredAuthChallenges.clear();
+  }
+  answeredAuthChallenges.add(requestId);
+}
+
+// Decide what to supply for one auth challenge: a credential, or null (decline
+// to the browser's native dialog).
+async function resolveBasicAuth(details) {
+  // Server auth only — proxy credentials are a different trust scope.
+  if (!details || details.isProxy) {
+    return null;
+  }
+  // Second fire for the same request → our credential was rejected; stop
+  // looping and let the browser prompt instead.
+  if (answeredAuthChallenges.has(details.requestId)) {
+    answeredAuthChallenges.delete(details.requestId);
+    return null;
+  }
+  if (!(await readBasicAuthEnabled(api))) {
+    return null;
+  }
+  let host;
+  try {
+    host = new URL(details.url).hostname;
+    /* v8 ignore start -- defence in depth: the browser fires onAuthRequired
+       only for a URL it already parsed, so the constructor never throws here
+       in production; happy-dom's URL never throws either, leaving the catch
+       unreachable from the suite. */
+  } catch (_) {
+    return null;
+  }
+  /* v8 ignore stop */
+  if (!host) {
+    return null;
+  }
+  // Honour the store the user chose for this host (null = default store).
+  const store = await recallStoreForHost(api, host);
+  let response;
+  try {
+    response = await sendNativeRequest({
+      action: ACTION.Query,
+      domain: host,
+      store: store ?? null,
+    });
+  } catch (_) {
+    return null;
+  }
+  if (!response || response.error) {
+    return null;
+  }
+  const credential = selectBasicAuthCredential(response.results);
+  if (credential) {
+    rememberAnsweredChallenge(details.requestId);
+  }
+  return credential;
+}
+
+function toAuthResult(credential) {
+  return credential ? { authCredentials: credential } : {};
+}
+
+// Register the handler only when the API is present (a stripped environment
+// is a no-op, not a throw). Firefox keeps blocking webRequest and lets the
+// listener return a Promise; Chromium MV3 needs `asyncBlocking` + a callback
+// (gated by the `webRequestAuthProvider` permission).
+if (api.webRequest?.onAuthRequired?.addListener) {
+  const filter = { urls: ["<all_urls>"] };
+  if (typeof globalThis.browser !== "undefined") {
+    api.webRequest.onAuthRequired.addListener(
+      (details) => resolveBasicAuth(details).then(toAuthResult),
+      filter,
+      ["blocking"],
+    );
+  } else {
+    api.webRequest.onAuthRequired.addListener(
+      (details, callback) => {
+        resolveBasicAuth(details).then((credential) =>
+          callback(toAuthResult(credential)),
+        );
+      },
+      filter,
+      ["asyncBlocking"],
+    );
+  }
+}

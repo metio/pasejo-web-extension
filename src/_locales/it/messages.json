@@ -1,0 +1,249 @@
+{
+  "extensionName": {
+    "message": "pasejo",
+    "description": "Extension name shown in the browser's add-on list and toolbar."
+  },
+  "extensionDescription": {
+    "message": "Compila le credenziali da un archivio pasejo cifrato con age",
+    "description": "Extension description shown in the browser's add-on list."
+  },
+  "commandOpenPopup": {
+    "message": "Apri il popup di pasejo",
+    "description": "Description of the keyboard command that opens the popup."
+  },
+  "permissionBannerText": {
+    "message": "pasejo ha bisogno dell'autorizzazione ad accedere alle pagine prima di poter compilare le credenziali.",
+    "description": "Firefox-only banner explaining why host permission is required."
+  },
+  "grantAccessButton": {
+    "message": "Concedi l'accesso",
+    "description": "Button that requests the missing host permission."
+  },
+  "storeLabel": {
+    "message": "Archivio",
+    "description": "Label and accessible name for the store-selector dropdown."
+  },
+  "refreshButton": {
+    "message": "Aggiorna",
+    "description": "Button that re-queries the host."
+  },
+  "refreshButtonTitle": {
+    "message": "Interroga di nuovo l'host",
+    "description": "Tooltip for the Refresh button."
+  },
+  "basicAuthToggleLabel": {
+    "message": "Compila automaticamente i prompt di autenticazione di base HTTP quando esattamente una credenziale memorizzata corrisponde al sito",
+    "description": "Label for the opt-in HTTP basic-auth setting."
+  },
+  "allStoresOption": {
+    "message": "Tutti gli archivi",
+    "description": "Dropdown entry that fans a query out across every store."
+  },
+  "storeOptionDefault": {
+    "message": "$NAME$ (predefinito)",
+    "description": "Dropdown entry marking the default store.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "matchBadgeUrl": {
+    "message": "url",
+    "description": "Badge shown when a match came from a URL field."
+  },
+  "matchBadgeName": {
+    "message": "name",
+    "description": "Badge shown when a match came from the secret name."
+  },
+  "fillButton": {
+    "message": "Compila",
+    "description": "Button that fills a credential into the page."
+  },
+  "fillRowAriaLabel": {
+    "message": "Compila $NAME$",
+    "description": "Accessible label for a result row.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "otpLabel": {
+    "message": "OTP: $CODE$",
+    "description": "Read-only one-time code shown on a result row.",
+    "placeholders": { "code": { "content": "$1" } }
+  },
+  "storeInlineLabel": {
+    "message": "archivio: $NAME$",
+    "description": "Inline label showing which store a match came from.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusHostUnreachable": {
+    "message": "Impossibile raggiungere l'host: $ERROR$",
+    "description": "Shown when the native-messaging host cannot be reached.",
+    "placeholders": { "error": { "content": "$1" } }
+  },
+  "protocolUnknown": {
+    "message": "(sconosciuto)",
+    "description": "Placeholder for a host that reported no protocol version."
+  },
+  "statusProtocolMismatch": {
+    "message": "L'host parla il protocollo $HOST$, l'estensione parla il protocollo $EXTENSION$. Aggiorna il binario pasejo o l'estensione affinché entrambe le parti corrispondano.",
+    "description": "Shown when the host and extension protocol versions differ.",
+    "placeholders": {
+      "host": { "content": "$1" },
+      "extension": { "content": "$2" }
+    }
+  },
+  "statusMalformedStores": {
+    "message": "Risposta dell'host malformata: `stores` non è un array.",
+    "description": "Shown when the host's store list is not an array."
+  },
+  "statusMalformedResults": {
+    "message": "Risposta dell'host malformata: `results` non è un array.",
+    "description": "Shown when the host's query results are not an array."
+  },
+  "statusHostReturnedError": {
+    "message": "L'host ha restituito $ERROR$.",
+    "description": "Fallback for an unrecognised host error kind.",
+    "placeholders": { "error": { "content": "$1" } }
+  },
+  "hostErrorHintSuffix": {
+    "message": " ($HINT$)",
+    "description": "Appends the host-supplied hint to an error message.",
+    "placeholders": { "hint": { "content": "$1" } }
+  },
+  "statusNoDomain": {
+    "message": "Nessun dominio per la scheda attiva — niente da cercare.",
+    "description": "Shown when the active tab has no host to search for."
+  },
+  "statusSearching": {
+    "message": "Ricerca di $DOMAIN$…",
+    "description": "Progress line for a single-store query.",
+    "placeholders": { "domain": { "content": "$1" } }
+  },
+  "statusSearchingProgress": {
+    "message": "Ricerca di $DOMAIN$… ($ANSWERED$/$TOTAL$ archivi hanno risposto)",
+    "description": "Progress line for a multi-store query.",
+    "placeholders": {
+      "domain": { "content": "$1" },
+      "answered": { "content": "$2" },
+      "total": { "content": "$3" }
+    }
+  },
+  "statusNoStoresToSearch": {
+    "message": "Nessun archivio da cercare.",
+    "description": "Shown when a multi-store query has no stores."
+  },
+  "statusProtocolUnverified": {
+    "message": "Interrogazione multi-archivio rifiutata: il protocollo dell'host non è ancora stato verificato.",
+    "description": "Guard shown when the multi-store path runs before protocol verification."
+  },
+  "statusNoMatches": {
+    "message": "Nessuna corrispondenza per $DOMAIN$.",
+    "description": "Shown when a query returns no matches.",
+    "placeholders": { "domain": { "content": "$1" } }
+  },
+  "statusNoMatchesSkipped": {
+    "message": "Nessuna corrispondenza per $DOMAIN$ ($COUNT$ archivio/i saltato/i: $NAMES$).",
+    "description": "Shown when a query returns no matches and some stores were skipped.",
+    "placeholders": {
+      "domain": { "content": "$1" },
+      "count": { "content": "$2" },
+      "names": { "content": "$3" }
+    }
+  },
+  "statusMatchesOne": {
+    "message": "$COUNT$ corrispondenza.",
+    "description": "Shown when a query returns exactly one match.",
+    "placeholders": { "count": { "content": "$1" } }
+  },
+  "statusMatchesOther": {
+    "message": "$COUNT$ corrispondenze.",
+    "description": "Shown when a query returns more than one match.",
+    "placeholders": { "count": { "content": "$1" } }
+  },
+  "statusSkippedSuffix": {
+    "message": " ($COUNT$ archivio/i saltato/i: $NAMES$)",
+    "description": "Appended to the match-count line when some stores were skipped.",
+    "placeholders": {
+      "count": { "content": "$1" },
+      "names": { "content": "$2" }
+    }
+  },
+  "skippedNamesFallback": {
+    "message": "errori",
+    "description": "Stand-in for skipped store names when none are known."
+  },
+  "statusNoActiveTab": {
+    "message": "Nessuna scheda attiva da compilare.",
+    "description": "Shown when there is no active tab to fill into."
+  },
+  "statusNoActiveTabMain": {
+    "message": "Nessuna scheda attiva.",
+    "description": "Shown when the popup opens with no active tab."
+  },
+  "noDomainPlaceholder": {
+    "message": "(nessun dominio)",
+    "description": "Header placeholder when the active tab has no hostname."
+  },
+  "statusPageAccessGranted": {
+    "message": "Accesso alla pagina concesso. Ricarica le schede già aperte prima di compilare.",
+    "description": "Shown after the user grants host permission."
+  },
+  "statusPageAccessRequestFailed": {
+    "message": "Impossibile richiedere l'accesso alla pagina: $ERROR$",
+    "description": "Shown when requesting host permission fails.",
+    "placeholders": { "error": { "content": "$1" } }
+  },
+  "statusFilledOtpOnly": {
+    "message": "Codice monouso compilato per $NAME$.",
+    "description": "Shown after filling only a one-time code (standalone 2FA step).",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilledUsernameOnly": {
+    "message": "Nome utente compilato per $NAME$ (nessun campo password in questa pagina).",
+    "description": "Shown after a partial fill (username only).",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilledUsernameOtp": {
+    "message": "Nome utente e relativo codice monouso compilati per $NAME$ (nessun campo password in questa pagina).",
+    "description": "Shown after a partial fill that also filled a one-time code.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilled": {
+    "message": "$NAME$ compilato.",
+    "description": "Shown after a successful username + password fill.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilledOtp": {
+    "message": "$NAME$ e il relativo codice monouso compilati.",
+    "description": "Shown after a fill that also filled a one-time code.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusNoFillablePassword": {
+    "message": "Nessun frame nella pagina aveva un campo password compilabile.",
+    "description": "Shown when no frame had a fillable password input."
+  },
+  "errorUnknownStore": {
+    "message": "L'archivio selezionato non esiste nella tua configurazione di pasejo.",
+    "description": "Host error: the requested store is not configured."
+  },
+  "errorNoStoreConfigured": {
+    "message": "Nessun archivio pasejo è configurato. Esegui prima `pasejo store add`.",
+    "description": "Host error: no store is configured at all."
+  },
+  "errorIdentityLocked": {
+    "message": "Impossibile decifrare l'archivio. Aggiungi l'identità age a ssh-agent — l'host non può chiedere una passphrase.",
+    "description": "Host error: the store could not be decrypted."
+  },
+  "errorHookFailed": {
+    "message": "Un hook di pull di pasejo è fallito prima che l'archivio potesse essere letto. Controlla il comando dell'hook e la rete.",
+    "description": "Host error: a pull hook failed."
+  },
+  "errorStoreUnreachable": {
+    "message": "Impossibile aprire o bloccare il file dell'archivio. Verifica che esista e di avere il permesso di lettura.",
+    "description": "Host error: the store file could not be opened or locked."
+  },
+  "errorDecodeError": {
+    "message": "L'host non è riuscito a decodificare la richiesta. Aggiorna l'estensione o il binario pasejo.",
+    "description": "Host error: the request could not be decoded."
+  },
+  "errorResponseTooLarge": {
+    "message": "La risposta per questo archivio era troppo grande per il limite di messaggistica nativa del browser. Riduci i corpi dei segreti molto grandi o restringi la corrispondenza.",
+    "description": "Host error: the reply exceeded the native-messaging size limit."
+  }
+}

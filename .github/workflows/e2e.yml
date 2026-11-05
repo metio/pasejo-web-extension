@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: The pasejo Authors
+# SPDX-License-Identifier: 0BSD
+
+name: End-to-end
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  e2e:
+    name: Browser e2e
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chrome + system libraries
+        run: npx playwright install --with-deps chrome
+
+      # Fetch the real host binary instead of building it, so this JS repo's
+      # CI needs no Rust toolchain. Pins to the `PASEJO_HOST_VERSION` repo
+      # variable when set, otherwise the latest release — i.e. the test
+      # asserts the extension works against a released host, the contract
+      # `protocol_version` negotiation is meant to protect.
+      - name: Download pasejo host binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PINNED: ${{ vars.PASEJO_HOST_VERSION }}
+        run: |
+          set -eu
+          if [ -n "${PINNED}" ]; then
+            TAG="${PINNED}"
+          else
+            TAG="$(gh release view --repo metio/pasejo --json tagName --jq .tagName)"
+          fi
+          echo "Using pasejo ${TAG}"
+          gh release download "${TAG}" \
+            --repo metio/pasejo \
+            --pattern 'pasejo-x86_64-unknown-linux-gnu.tar.gz' \
+            --output pasejo.tar.gz
+          tar -xzf pasejo.tar.gz
+          chmod +x pasejo
+          echo "PASEJO_BIN=${PWD}/pasejo" >> "${GITHUB_ENV}"
+
+      # Bootstrap a store with one URL-tagged secret, using the fixed test
+      # age key from the Rust suite's `tests/common/mod.rs`. The unencrypted
+      # key lets the host decrypt without ssh-agent or a passphrase prompt.
+      # `browser query` at the end fails the job early if the store is wrong.
+      - name: Bootstrap a test store
+        run: |
+          set -eu
+          CONFIG="${RUNNER_TEMP}/pasejo-config.toml"
+          IDENT="${RUNNER_TEMP}/identity"
+          PUBKEY='age1fdalwkzzv0vztxm08gmh6geddk095x0ww9ztfjdtlf673ynwugqssxx8qd'
+          export PASEJO_CONFIG="${CONFIG}"
+          printf '%s\n' \
+            "# public key: ${PUBKEY}" \
+            'AGE-SECRET-KEY-14LGKWZMHDDWMLCL5EUU2FSQNEX33DZYR3F8VEPZSA670QRC3DA3SNSD535' \
+            > "${IDENT}"
+          chmod 600 "${IDENT}"
+          "${PASEJO_BIN}" store add --path "${RUNNER_TEMP}/store" --name test
+          "${PASEJO_BIN}" identity add --file "${IDENT}"
+          "${PASEJO_BIN}" recipient add --public-key "${PUBKEY}"
+          printf '%s\n' 'hunter2' 'url: https://example.com' 'login: alice@example.com' \
+            | "${PASEJO_BIN}" secret add alice
+          "${PASEJO_BIN}" browser query example.com
+          echo "PASEJO_CONFIG=${CONFIG}" >> "${GITHUB_ENV}"
+
+      - name: Build the Chromium extension bundle
+        run: ./package.sh
+
+      - name: Run Playwright e2e
+        run: xvfb-run -a npm run test:e2e
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: playwright-report
+          path: playwright-report/
+          if-no-files-found: ignore

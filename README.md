@@ -37,8 +37,9 @@ without prompting for a passphrase).
    pasejo browser install-manifest --browser chrome --extension-id <id>
    ```
 
-   Repeat with `--browser brave / chromium / edge / vivaldi` as
-   needed. Browsers spawn the host with a stripped environment, so if
+   Repeat with `--browser brave / chromium / edge / vivaldi / opera`
+   as needed (see *Supported browsers* below). Browsers spawn the host
+   with a stripped environment, so if
    your `pasejo` config or ssh-agent socket lives off the default path,
    pass `--env KEY=VALUE` to bake those into the wrapper:
 
@@ -48,19 +49,85 @@ without prompting for a passphrase).
      --env "SSH_AUTH_SOCK=/run/user/1000/keyring/ssh"
    ```
 
-3. **Open a website you have a credential for**, click the pasejo
+3. **Firefox only: grant page access.** Firefox ships extension host
+   permissions disabled by default, and without them the fill script
+   never reaches any page. The popup detects the missing grant and
+   shows a *Grant access* banner — click it and accept the prompt.
+   (Alternatively: *about:addons → pasejo → Permissions → Access your
+   data for all websites*.) Pages that were already open need a
+   reload before they can be filled. Chromium-family browsers grant
+   this at install time, so no banner appears there.
+
+4. **Open a website you have a credential for**, click the pasejo
    toolbar icon (or press **Ctrl+Shift+L** / **⌘+Shift+L**), and pick a
    match. Click *Fill* (or click the row) to inject the username and
    password into the page. The popup remembers which store you picked
    for that hostname and restores it next time.
 
+## Supported browsers
+
+The extension targets the latest stable releases below. Every
+Chromium-family browser runs the **same** `dist/chromium` build —
+Edge, Brave, Vivaldi, and Opera are all Chromium under the hood, so
+there is no Edge-specific (etc.) build to maintain.
+
+| Browser        | Build          | Notes                                           |
+| -------------- | -------------- | ----------------------------------------------- |
+| Firefox        | `dist/firefox` | Stable add-on id; `--extension-id` not needed   |
+| Chrome         | `dist/chromium`|                                                 |
+| Chromium       | `dist/chromium`|                                                 |
+| Microsoft Edge | `dist/chromium`| Chromium-based; the Chrome build runs unchanged |
+| Brave          | `dist/chromium`|                                                 |
+| Vivaldi        | `dist/chromium`|                                                 |
+| Opera          | `dist/chromium`|                                                 |
+
+For any Chromium-family browser, load the `dist/chromium` build (from
+its add-ons store once published, or unpacked) and register the host
+with the **matching `--browser` name** plus `--extension-id <id>` —
+the id is shown on the browser's extensions page after the unpacked
+extension loads, or assigned by its store. The `--browser` name only
+selects which per-user directory the manifest is written to; the
+manifest content is identical across the Chromium family:
+
+```sh
+pasejo browser install-manifest --browser edge  --extension-id <id>
+pasejo browser install-manifest --browser opera --extension-id <id>
+```
+
+`install-manifest` supports **Linux, macOS, and Windows**. On Linux and
+macOS it writes the manifest into the browser's lookup directory; on
+**Windows** it writes the manifest under the data directory and registers
+an `HKEY_CURRENT_USER` value pointing at it (Windows browsers locate
+native-messaging hosts through the registry), installing a `.cmd` wrapper
+instead of a shell script. The Windows path is compile-verified but has not
+yet been exercised on a real Windows machine, and the registry locations for
+the Chromium *forks* (Brave, Vivaldi, Opera) are best-effort — Chrome, Edge,
+Chromium, and Firefox use their vendors' documented keys. **Safari** is not
+supported: its extensions use a different native-messaging model — an
+app-bundled handler built with Xcode rather than a standalone host binary the
+manifest points at.
+
 ## OTPs
 
-If the matching secret has a TOTP entry under the same name, the popup
-shows the current 6-digit code as read-only text. Type it into the
-site's 2FA field, or — if you want auto-clearing-clipboard behaviour —
-reach for `pasejo otp show --clip` from a terminal. The extension
-itself doesn't write to the clipboard.
+If the matching secret has a TOTP entry under the same name, Fill also
+fills the site's one-time-code field when the page has one — both on the
+login page and on a standalone 2FA step (open the popup there and pick the
+match). Detection prefers the `autocomplete="one-time-code"` standard, then
+a tight set of name hints, so an unrelated code field (coupon, zip) is not
+mistaken for it. The popup also shows the current code as read-only text as
+a manual fallback. For auto-clearing-clipboard behaviour instead, reach for
+`pasejo otp show --clip` from a terminal; the extension never writes to the
+clipboard. (HOTP is not autofilled — emitting a counter-based code without
+advancing the counter would break it.)
+
+## Languages
+
+The popup and its messages are localized to the same eight languages as the
+`pasejo` CLI — English, German, Spanish, French, Italian, Japanese, Korean,
+and Chinese. The browser picks the catalog matching its UI language and falls
+back to English (`default_locale`) for anything it cannot match. Strings live
+in `src/_locales/<lang>/messages.json`; English is the source of truth and a
+test fails if any other language drifts from its key set.
 
 ## Keyboard shortcut
 
@@ -131,7 +198,11 @@ DOM-touching files (popup, content script) and a stubbed WebExtensions
 API for the background script. All four source files
 (`protocol.js`, `background.js`, `popup/popup.js`, `content/fill.js`)
 are loaded as classic scripts via `vm.compileFunction` so the same
-files the extension ships are the files under test.
+files the extension ships are the files under test. The mock
+WebExtensions `i18n.getMessage` is backed by the real
+`_locales/en/messages.json`, so popup assertions see the exact strings
+the extension renders, and `tests/locales.test.js` fails if any
+translation drifts from the English key set or drops a placeholder.
 
 ```sh
 npm install          # one-time
@@ -143,6 +214,27 @@ npm run coverage     # full run + v8 coverage report; the suite enforces 100% li
 Coverage output lands in `coverage/` (gitignored). The default
 `lcov` + HTML reporters write an `index.html` you can open to navigate
 to any uncovered branch.
+
+### End-to-end tests
+
+`e2e/` holds a Playwright suite (`npm run test:e2e`) that drives a real
+Chrome with the unpacked `dist/chromium` build loaded and the **real**
+`pasejo browser host` on the other end of native messaging — the only
+configuration that catches protocol drift between this extension and the
+Rust host. It builds a throwaway store, registers the host with
+`pasejo browser install-manifest`, opens the toolbar popup against an
+intercepted `example.com` page via `chrome.action.openPopup()`, and asserts
+the form is filled. The `End-to-end` CI workflow downloads a released
+`pasejo` binary, bootstraps the store, and runs the suite under `xvfb`; run
+it locally with a `pasejo` on `PATH`:
+
+```sh
+./package.sh                                   # build dist/chromium first
+npx playwright install chrome                  # one-time
+PASEJO_BIN="$(command -v pasejo)" \
+  PASEJO_CONFIG=/path/to/test-config.toml \
+  xvfb-run -a npm run test:e2e
+```
 
 ## Loading the unpacked extension
 
@@ -161,12 +253,15 @@ Pin the extension to the toolbar so the popup is one click away.
 * The extension's background page connects to the `wtf.metio.pasejo`
   native-messaging host on demand. Single-store queries open one
   connection per request (no persistent port). Multi-store queries
-  ("All stores" with N stores configured) take a single connection
-  carrying every per-store query as a `query_multi` batch — the
-  host's worker threads decrypt each store in parallel so a
-  YubiKey-blocked store doesn't gate the others. The extension and
-  the host negotiate on `protocol_version` (currently `1`) and
-  refuse to operate if the two sides disagree.
+  ("All stores" with N stores configured) stream: the popup opens a
+  `runtime.connect` port to the background, the background fans the
+  per-store queries out over a single native connection, and each
+  store's reply is pushed back to the popup the moment it lands —
+  the results list and the `(answered/total)` progress counter
+  update store by store, so a YubiKey-blocked store doesn't gate
+  the others on screen either. The extension and the host negotiate
+  on `protocol_version` (currently `1`) and refuse to operate if
+  the two sides disagree.
 * When the user opens the popup, the extension sends a `query` request
   with the active tab's hostname and renders the returned matches.
 * Filling a credential sends a message to the active tab's content
@@ -182,8 +277,10 @@ extension is purely a relay between the popup, the active tab, and
 
 ## Manual test checklist
 
-There is no automated browser test yet — exercise the full chain
-manually after any change to the extension or to `pasejo browser host`.
+The Playwright e2e suite (above) covers the happy path automatically. This
+checklist exercises the breadth the single e2e does not — error kinds,
+multi-store streaming, OTP — after any change to the extension or to
+`pasejo browser host`.
 
 **Once-off setup (per browser):**
 
@@ -230,9 +327,12 @@ surfaces.
 src/                 Source files served verbatim from the extension
   background.js      Service-worker / event-page driver for the native host
   popup/             Toolbar popup: query, results list, fill action
-  content/fill.js    Content script that fills username + password
-  protocol.js        Shared protocol constants
+  content/fill.js    Content script that fills username + password + OTP
+  protocol.js        Shared protocol constants + i18n / storage helpers
+  _locales/          Per-language messages.json (en is default_locale)
 manifests/           Per-browser manifest.json files
 icons/               Toolbar icons; edit pasejo.svg, then run make-icons.sh
 package.sh           Copies src/ + the right manifest into dist/<browser>/
+tests/               Vitest unit suite (happy-dom)
+e2e/                 Playwright end-to-end suite (real Chrome + real host)
 ```

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: The pasejo Authors
 // SPDX-License-Identifier: 0BSD
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loadClassicScript } from "./helpers/load-script.js";
 
@@ -54,20 +54,49 @@ describe("protocol.js", () => {
       HookFailed: "hook_failed",
       StoreUnreachable: "store_unreachable",
       NoStoreConfigured: "no_store_configured",
+      ResponseTooLarge: "response_too_large",
     });
   });
 
-  it("freezes the ERROR_COPY map and has copy for every fail-mode error kind", () => {
+  it("freezes ERROR_MESSAGE_IDS and maps every fail-mode error kind to a message id", () => {
     loadClassicScript("src/protocol.js");
-    expect(Object.isFrozen(globalThis.PASEJO.ERROR_COPY)).toBe(true);
+    expect(Object.isFrozen(globalThis.PASEJO.ERROR_MESSAGE_IDS)).toBe(true);
     // unknown_action is reserved but currently unused by the host.
     const kinds = Object.values(globalThis.PASEJO.ERROR_KIND).filter(
       (k) => k !== "unknown_action",
     );
     for (const kind of kinds) {
-      expect(globalThis.PASEJO.ERROR_COPY[kind]).toBeTypeOf("string");
-      expect(globalThis.PASEJO.ERROR_COPY[kind].length).toBeGreaterThan(0);
+      expect(globalThis.PASEJO.ERROR_MESSAGE_IDS[kind]).toBeTypeOf("string");
+      expect(globalThis.PASEJO.ERROR_MESSAGE_IDS[kind].length).toBeGreaterThan(
+        0,
+      );
     }
+  });
+
+  it("resolves localized strings through `t`, stringifying substitutions", () => {
+    const getMessage = vi.fn(
+      (key, subs) => `${key}|${(subs ?? []).join(",")}`,
+    );
+    globalThis.browser = { i18n: { getMessage } };
+    loadClassicScript("src/protocol.js");
+    expect(globalThis.PASEJO.t("statusFilled", "acme")).toBe(
+      "statusFilled|acme",
+    );
+    // Substitutions are stringified before they reach the i18n API.
+    globalThis.PASEJO.t("statusSearchingProgress", "site", 1, 2);
+    expect(getMessage).toHaveBeenLastCalledWith("statusSearchingProgress", [
+      "site",
+      "1",
+      "2",
+    ]);
+    // No substitutions => undefined (not an empty array) to the API.
+    globalThis.PASEJO.t("grantAccessButton");
+    expect(getMessage).toHaveBeenLastCalledWith("grantAccessButton", undefined);
+  });
+
+  it("returns an empty string from `t` when the i18n API is unavailable", () => {
+    loadClassicScript("src/protocol.js");
+    expect(globalThis.PASEJO.t("statusFilled", "acme")).toBe("");
   });
 
   it("prefers the `browser` global over `chrome` for api binding", () => {
@@ -89,5 +118,79 @@ describe("protocol.js", () => {
   it("api is undefined when neither global exists (extension never sees this, but kept defensive)", () => {
     loadClassicScript("src/protocol.js");
     expect(globalThis.PASEJO.api).toBeUndefined();
+  });
+
+  describe("shared storage primitives", () => {
+    function loadPasejo() {
+      globalThis.chrome = {};
+      loadClassicScript("src/protocol.js");
+      return globalThis.PASEJO;
+    }
+
+    // A storage stub whose `local.get(key)` returns `{ [key]: data[key] }`
+    // for known keys and `{}` otherwise — mirroring the real API.
+    function storageStub(data) {
+      return {
+        storage: {
+          local: {
+            get: async (key) => (key in data ? { [key]: data[key] } : {}),
+          },
+        },
+      };
+    }
+
+    it("readBasicAuthEnabled defaults to false", async () => {
+      const pasejo = loadPasejo();
+      expect(await pasejo.readBasicAuthEnabled(storageStub({}))).toBe(false);
+    });
+
+    it("readBasicAuthEnabled is true only for `basicAuth === true`", async () => {
+      const pasejo = loadPasejo();
+      const on = storageStub({ "pasejo:settings": { basicAuth: true } });
+      const stringy = storageStub({ "pasejo:settings": { basicAuth: "yes" } });
+      const nulled = storageStub({ "pasejo:settings": null });
+      expect(await pasejo.readBasicAuthEnabled(on)).toBe(true);
+      expect(await pasejo.readBasicAuthEnabled(stringy)).toBe(false);
+      expect(await pasejo.readBasicAuthEnabled(nulled)).toBe(false);
+    });
+
+    it("readBasicAuthEnabled tolerates a missing storage API", async () => {
+      const pasejo = loadPasejo();
+      expect(await pasejo.readBasicAuthEnabled({})).toBe(false);
+    });
+
+    it("readBasicAuthEnabled treats a storage read error as opted-out", async () => {
+      const pasejo = loadPasejo();
+      const failing = {
+        storage: {
+          local: { get: () => Promise.reject(new Error("storage broke")) },
+        },
+      };
+      expect(await pasejo.readBasicAuthEnabled(failing)).toBe(false);
+    });
+
+    it("recallStoreForHost returns the remembered store or null", async () => {
+      const pasejo = loadPasejo();
+      const stub = storageStub({
+        "pasejo:host-stores": {
+          "example.com": { store: "work", lastUsedAt: 1 },
+        },
+      });
+      expect(await pasejo.recallStoreForHost(stub, "example.com")).toBe("work");
+      expect(await pasejo.recallStoreForHost(stub, "other.com")).toBe(null);
+      expect(await pasejo.recallStoreForHost(stub, "")).toBe(null);
+    });
+
+    it("recallStoreForHost drops malformed entries", async () => {
+      const pasejo = loadPasejo();
+      const stub = storageStub({
+        "pasejo:host-stores": {
+          "a.com": { store: 123, lastUsedAt: 1 },
+          "b.com": "nope",
+        },
+      });
+      expect(await pasejo.recallStoreForHost(stub, "a.com")).toBe(null);
+      expect(await pasejo.recallStoreForHost(stub, "b.com")).toBe(null);
+    });
   });
 });

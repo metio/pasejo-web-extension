@@ -1,0 +1,249 @@
+{
+  "extensionName": {
+    "message": "pasejo",
+    "description": "Extension name shown in the browser's add-on list and toolbar."
+  },
+  "extensionDescription": {
+    "message": "age で暗号化された pasejo ストアから認証情報を入力します",
+    "description": "Extension description shown in the browser's add-on list."
+  },
+  "commandOpenPopup": {
+    "message": "pasejo のポップアップを開く",
+    "description": "Description of the keyboard command that opens the popup."
+  },
+  "permissionBannerText": {
+    "message": "pasejo が認証情報を入力するには、ページへのアクセス許可が必要です。",
+    "description": "Firefox-only banner explaining why host permission is required."
+  },
+  "grantAccessButton": {
+    "message": "アクセスを許可",
+    "description": "Button that requests the missing host permission."
+  },
+  "storeLabel": {
+    "message": "ストア",
+    "description": "Label and accessible name for the store-selector dropdown."
+  },
+  "refreshButton": {
+    "message": "再読み込み",
+    "description": "Button that re-queries the host."
+  },
+  "refreshButtonTitle": {
+    "message": "ホストに再問い合わせ",
+    "description": "Tooltip for the Refresh button."
+  },
+  "basicAuthToggleLabel": {
+    "message": "保存された認証情報がサイトと 1 つだけ一致する場合、HTTP ベーシック認証のプロンプトを自動入力する",
+    "description": "Label for the opt-in HTTP basic-auth setting."
+  },
+  "allStoresOption": {
+    "message": "すべてのストア",
+    "description": "Dropdown entry that fans a query out across every store."
+  },
+  "storeOptionDefault": {
+    "message": "$NAME$ (デフォルト)",
+    "description": "Dropdown entry marking the default store.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "matchBadgeUrl": {
+    "message": "url",
+    "description": "Badge shown when a match came from a URL field."
+  },
+  "matchBadgeName": {
+    "message": "name",
+    "description": "Badge shown when a match came from the secret name."
+  },
+  "fillButton": {
+    "message": "入力",
+    "description": "Button that fills a credential into the page."
+  },
+  "fillRowAriaLabel": {
+    "message": "$NAME$ を入力",
+    "description": "Accessible label for a result row.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "otpLabel": {
+    "message": "OTP: $CODE$",
+    "description": "Read-only one-time code shown on a result row.",
+    "placeholders": { "code": { "content": "$1" } }
+  },
+  "storeInlineLabel": {
+    "message": "ストア: $NAME$",
+    "description": "Inline label showing which store a match came from.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusHostUnreachable": {
+    "message": "ホストに接続できませんでした: $ERROR$",
+    "description": "Shown when the native-messaging host cannot be reached.",
+    "placeholders": { "error": { "content": "$1" } }
+  },
+  "protocolUnknown": {
+    "message": "(不明)",
+    "description": "Placeholder for a host that reported no protocol version."
+  },
+  "statusProtocolMismatch": {
+    "message": "ホストはプロトコル $HOST$ を、拡張機能はプロトコル $EXTENSION$ を使用しています。両端が一致するように pasejo バイナリまたは拡張機能を更新してください。",
+    "description": "Shown when the host and extension protocol versions differ.",
+    "placeholders": {
+      "host": { "content": "$1" },
+      "extension": { "content": "$2" }
+    }
+  },
+  "statusMalformedStores": {
+    "message": "ホストの応答が不正です: `stores` が配列ではありません。",
+    "description": "Shown when the host's store list is not an array."
+  },
+  "statusMalformedResults": {
+    "message": "ホストの応答が不正です: `results` が配列ではありません。",
+    "description": "Shown when the host's query results are not an array."
+  },
+  "statusHostReturnedError": {
+    "message": "ホストが $ERROR$ を返しました。",
+    "description": "Fallback for an unrecognised host error kind.",
+    "placeholders": { "error": { "content": "$1" } }
+  },
+  "hostErrorHintSuffix": {
+    "message": " ($HINT$)",
+    "description": "Appends the host-supplied hint to an error message.",
+    "placeholders": { "hint": { "content": "$1" } }
+  },
+  "statusNoDomain": {
+    "message": "アクティブなタブにドメインがありません — 検索対象がありません。",
+    "description": "Shown when the active tab has no host to search for."
+  },
+  "statusSearching": {
+    "message": "$DOMAIN$ を検索しています…",
+    "description": "Progress line for a single-store query.",
+    "placeholders": { "domain": { "content": "$1" } }
+  },
+  "statusSearchingProgress": {
+    "message": "$DOMAIN$ を検索しています… ($ANSWERED$/$TOTAL$ ストアが応答しました)",
+    "description": "Progress line for a multi-store query.",
+    "placeholders": {
+      "domain": { "content": "$1" },
+      "answered": { "content": "$2" },
+      "total": { "content": "$3" }
+    }
+  },
+  "statusNoStoresToSearch": {
+    "message": "検索するストアがありません。",
+    "description": "Shown when a multi-store query has no stores."
+  },
+  "statusProtocolUnverified": {
+    "message": "複数ストアのクエリを拒否しました: ホストのプロトコルがまだ検証されていません。",
+    "description": "Guard shown when the multi-store path runs before protocol verification."
+  },
+  "statusNoMatches": {
+    "message": "$DOMAIN$ に一致するものがありません。",
+    "description": "Shown when a query returns no matches.",
+    "placeholders": { "domain": { "content": "$1" } }
+  },
+  "statusNoMatchesSkipped": {
+    "message": "$DOMAIN$ に一致するものがありません ($COUNT$ 個のストアをスキップしました: $NAMES$)。",
+    "description": "Shown when a query returns no matches and some stores were skipped.",
+    "placeholders": {
+      "domain": { "content": "$1" },
+      "count": { "content": "$2" },
+      "names": { "content": "$3" }
+    }
+  },
+  "statusMatchesOne": {
+    "message": "$COUNT$ 件一致しました。",
+    "description": "Shown when a query returns exactly one match.",
+    "placeholders": { "count": { "content": "$1" } }
+  },
+  "statusMatchesOther": {
+    "message": "$COUNT$ 件一致しました。",
+    "description": "Shown when a query returns more than one match.",
+    "placeholders": { "count": { "content": "$1" } }
+  },
+  "statusSkippedSuffix": {
+    "message": " ($COUNT$ 個のストアをスキップしました: $NAMES$)",
+    "description": "Appended to the match-count line when some stores were skipped.",
+    "placeholders": {
+      "count": { "content": "$1" },
+      "names": { "content": "$2" }
+    }
+  },
+  "skippedNamesFallback": {
+    "message": "エラー",
+    "description": "Stand-in for skipped store names when none are known."
+  },
+  "statusNoActiveTab": {
+    "message": "入力するアクティブなタブがありません。",
+    "description": "Shown when there is no active tab to fill into."
+  },
+  "statusNoActiveTabMain": {
+    "message": "アクティブなタブがありません。",
+    "description": "Shown when the popup opens with no active tab."
+  },
+  "noDomainPlaceholder": {
+    "message": "(ドメインなし)",
+    "description": "Header placeholder when the active tab has no hostname."
+  },
+  "statusPageAccessGranted": {
+    "message": "ページへのアクセスが許可されました。入力する前に、既に開いているタブを再読み込みしてください。",
+    "description": "Shown after the user grants host permission."
+  },
+  "statusPageAccessRequestFailed": {
+    "message": "ページへのアクセスを要求できませんでした: $ERROR$",
+    "description": "Shown when requesting host permission fails.",
+    "placeholders": { "error": { "content": "$1" } }
+  },
+  "statusFilledOtpOnly": {
+    "message": "$NAME$ のワンタイムコードを入力しました。",
+    "description": "Shown after filling only a one-time code (standalone 2FA step).",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilledUsernameOnly": {
+    "message": "$NAME$ のユーザー名を入力しました (このページにはパスワードフィールドがありません)。",
+    "description": "Shown after a partial fill (username only).",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilledUsernameOtp": {
+    "message": "$NAME$ のユーザー名とそのワンタイムコードを入力しました (このページにはパスワードフィールドがありません)。",
+    "description": "Shown after a partial fill that also filled a one-time code.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilled": {
+    "message": "$NAME$ を入力しました。",
+    "description": "Shown after a successful username + password fill.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFilledOtp": {
+    "message": "$NAME$ とそのワンタイムコードを入力しました。",
+    "description": "Shown after a fill that also filled a one-time code.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusNoFillablePassword": {
+    "message": "ページのどのフレームにも入力可能なパスワード入力欄がありませんでした。",
+    "description": "Shown when no frame had a fillable password input."
+  },
+  "errorUnknownStore": {
+    "message": "選択したストアは pasejo の設定に存在しません。",
+    "description": "Host error: the requested store is not configured."
+  },
+  "errorNoStoreConfigured": {
+    "message": "pasejo のストアが設定されていません。最初に `pasejo store add` を実行してください。",
+    "description": "Host error: no store is configured at all."
+  },
+  "errorIdentityLocked": {
+    "message": "ストアを復号できませんでした。age アイデンティティを ssh-agent に追加してください — ホストはパスフレーズを入力するよう求めることができません。",
+    "description": "Host error: the store could not be decrypted."
+  },
+  "errorHookFailed": {
+    "message": "ストアを読み取る前に pasejo のプルフックが失敗しました。フックコマンドとネットワークを確認してください。",
+    "description": "Host error: a pull hook failed."
+  },
+  "errorStoreUnreachable": {
+    "message": "ストアファイルを開く、またはロックできませんでした。ファイルが存在し、読み取り権限があることを確認してください。",
+    "description": "Host error: the store file could not be opened or locked."
+  },
+  "errorDecodeError": {
+    "message": "ホストがリクエストをデコードできませんでした。拡張機能または pasejo バイナリを更新してください。",
+    "description": "Host error: the request could not be decoded."
+  },
+  "errorResponseTooLarge": {
+    "message": "このストアの応答はブラウザのネイティブメッセージングの上限を超えていました。非常に大きいシークレットの本文を削減するか、一致条件を絞り込んでください。",
+    "description": "Host error: the reply exceeded the native-messaging size limit."
+  }
+}
