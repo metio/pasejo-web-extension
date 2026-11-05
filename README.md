@@ -17,8 +17,8 @@ telemetry. See [PRIVACY.md](PRIVACY.md) for the full statement.
 ## Quick start
 
 Prerequisites: a working [pasejo][pasejo] install with at least one
-store and one identity (an `age` key loaded into ssh-agent works
-without prompting for a passphrase).
+store and one identity the host can use without a terminal (see
+*Identities* below).
 
 1. **Install the extension** from
    [Firefox Add-ons](https://addons.mozilla.org/) or the
@@ -39,30 +39,66 @@ without prompting for a passphrase).
 
    Repeat with `--browser brave / chromium / edge / vivaldi / opera`
    as needed (see *Supported browsers* below). Browsers spawn the host
-   with a stripped environment, so if
-   your `pasejo` config or ssh-agent socket lives off the default path,
-   pass `--env KEY=VALUE` to bake those into the wrapper:
+   with a stripped environment, so if your `pasejo` config, default
+   store, or graphical pinentry is not found from the defaults, pass
+   `--env KEY=VALUE` to bake those into the wrapper:
 
    ```sh
    pasejo browser install-manifest --browser firefox \
      --env "PASEJO_DEFAULT_STORE=work" \
-     --env "SSH_AUTH_SOCK=/run/user/1000/keyring/ssh"
+     --env "PINENTRY_PROGRAM=/usr/bin/pinentry-gnome3"
    ```
 
-3. **Firefox only: grant page access.** Firefox ships extension host
-   permissions disabled by default, and without them the fill script
-   never reaches any page. The popup detects the missing grant and
-   shows a *Grant access* banner — click it and accept the prompt.
-   (Alternatively: *about:addons → pasejo → Permissions → Access your
-   data for all websites*.) Pages that were already open need a
-   reload before they can be filled. Chromium-family browsers grant
-   this at install time, so no banner appears there.
-
-4. **Open a website you have a credential for**, click the pasejo
+3. **Open a website you have a credential for**, click the pasejo
    toolbar icon (or press **Ctrl+Shift+L** / **⌘+Shift+L**), and pick a
-   match. Click *Fill* (or click the row) to inject the username and
+   match. Click *Fill* (or click the row) to fill the username and
    password into the page. The popup remembers which store you picked
    for that hostname and restores it next time.
+
+## Page access
+
+The extension holds no standing access to websites. It asks for
+`activeTab`, `scripting`, `nativeMessaging`, and `storage`, and no host
+permissions, so installing it grants no access to any site.
+
+* **Opening the popup** — by clicking the toolbar icon or pressing the
+  shortcut — grants `activeTab` for the tab you opened it on. The
+  popup then reads that tab's URL to search your store for its
+  hostname.
+* **Picking a match** injects the fill script into the tab with
+  `scripting.executeScript`: into the page itself and into frames on
+  the page's own origin. Under `activeTab` the browser keeps frames
+  from other origins out of reach, so a login form inside a
+  cross-origin iframe cannot be filled.
+* **Before a credential leaves the popup**, the extension checks that
+  the tab still shows the origin the popup searched for, and that
+  each frame's origin — as the browser reports it, not as the page
+  claims it — matches the secret the same way the host matched it
+  (the stored URL's exact host or registrable domain, or the secret's
+  name for a secret without a URL). When that
+  cannot be decided from the page's own host or the stored URL's
+  host, the popup asks the host, which can mean one more decryption.
+  Frames of other sites are skipped.
+* **The grant ends** when the tab navigates to another origin or
+  closes; Firefox ends it on any navigation that loads a new
+  document. After that, reopen the popup on the new page.
+
+Browsers do not let extensions run on some pages at all, such as
+their own settings pages and add-on stores; the popup says so when you
+try to fill there.
+
+## Identities
+
+The host decrypts the store on every query and has no terminal to ask
+for a passphrase, so it skips passphrase-protected identities —
+passphrase-encrypted age identity files and encrypted SSH keys — and the
+popup shows an *identity locked* error when no remaining identity can
+decrypt the store. An ssh-agent does not help, because pasejo reads SSH
+keys from their files. For browser use, register an unencrypted
+identity file (protected by file permissions and disk encryption) or a
+plugin-backed identity such as one from `age-plugin-yubikey`. A plugin
+that asks for a PIN uses pinentry when one is available; set
+`PINENTRY_PROGRAM` to a graphical pinentry with `--env` as shown above.
 
 ## Supported browsers
 
@@ -145,11 +181,6 @@ per-hostname in `chrome.storage.local` and restored next time. With
 more than one store configured, an *All stores* entry appears at the
 top of the dropdown that fans out the query across every store and
 merges the results.
-
-Encrypted age identities cannot be unlocked from the host because there
-is no TTY to read a passphrase from; the popup surfaces this as an
-*identity locked* error. Use ssh-agent as the identity source so the
-host can decrypt without prompting.
 
 ## Known limitations
 
@@ -264,11 +295,16 @@ Pin the extension to the toolbar so the popup is one click away.
   the two sides disagree.
 * When the user opens the popup, the extension sends a `query` request
   with the active tab's hostname and renders the returned matches.
-* Filling a credential sends a message to the active tab's content
-  script (fanned out across all frames so SSO iframes work), which
-  assigns the username and password into the focused form (or the
-  first plausible form on the page) and dispatches `input` / `change`
-  events so framework-driven inputs notice.
+* Filling a credential injects `content/fill.js` into every frame of
+  the tab the browser lets the extension reach. Each injected frame
+  opens a `pasejo-frame` port back to the popup; the popup reads the
+  frame's origin from the port's browser-stamped `sender`, skips
+  frames whose origin the secret does not match, and sends the
+  credential over the port of one frame at a time — the frame that
+  held focus first. The fill script assigns the username and password
+  into the focused form (or the first plausible form in its frame) and
+  dispatches `input` / `change` events so framework-driven inputs
+  notice.
 
 There is no automatic fill on page load, no clipboard write without an
 explicit user click, and no credential ever lands in `storage` — the
@@ -289,9 +325,9 @@ multi-store streaming, OTP — after any change to the extension or to
    Chromium-family extension id if applicable.
 3. Run `pasejo browser install-manifest --browser <name> [--extension-id <id>]`
    and confirm the wrapper script + manifest paths it logs.
-4. Make sure the configured store has at least one identity that the
-   host can decrypt without a passphrase — typically a key loaded into
-   ssh-agent.
+4. Make sure the configured store has at least one identity the host
+   can use without a terminal — an unencrypted age identity file or a
+   plugin-backed identity (see *Identities* above).
 
 **Smoke test (run for both Firefox and Chromium):**
 
@@ -307,6 +343,10 @@ multi-store streaming, OTP — after any change to the extension or to
 * For a secret with an OTP, expect *OTP: 123456* to appear in the
   row's secondary line and update when you reopen the popup after
   30 s.
+* Open the popup on a page whose login form sits in a same-origin
+  iframe. Expect the fill to land in the iframe.
+* Open the popup, navigate the tab to another site, then click a row.
+  Expect *The page changed since pasejo opened …* and no fill.
 * Open the popup on a page with no matching secret. Expect *No matches
   for …*, no error.
 * With the store file removed (`mv ~/store ~/store.bak`), open the

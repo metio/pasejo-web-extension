@@ -219,7 +219,7 @@
     "description": "Host error: no store is configured at all."
   },
   "errorIdentityLocked": {
-    "message": "Impossible de déchiffrer le coffre. Ajoutez l'identité age à ssh-agent — l'hôte ne peut pas demander de phrase secrète.",
+    "message": "Déchiffrement impossible : l'hôte ignore les identités à phrase secrète. Utilisez une identité age non chiffrée ou à plugin, et un PINENTRY_PROGRAM graphique pour les PIN.",
     "description": "Host error: the store could not be decrypted."
   },
   "errorHookFailed": {

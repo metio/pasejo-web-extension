@@ -219,7 +219,7 @@
     "description": "Host error: no store is configured at all."
   },
   "errorIdentityLocked": {
-    "message": "저장소를 복호화할 수 없습니다. age 신원을 ssh-agent에 추가하세요 — 호스트는 암호 구문을 입력받을 수 없습니다.",
+    "message": "복호화할 수 없습니다. 호스트는 암호 문구로 보호된 신원을 건너뜁니다. 암호화되지 않았거나 플러그인 기반인 age 신원을 사용하고, PIN 입력에는 그래픽 PINENTRY_PROGRAM을 설정하세요.",
     "description": "Host error: the store could not be decrypted."
   },
   "errorHookFailed": {

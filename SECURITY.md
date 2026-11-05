@@ -22,10 +22,33 @@ a known property of the design, not a vulnerability.
 * **Credentials are never written to browser storage.** Only the
   store-name-per-hostname preference is persisted; secrets live in
   memory for the duration of a popup interaction.
-* **Pages cannot trigger a fill.** The content script's message
-  listener is intra-extension only (`runtime.onMessage`; there is no
-  `onMessageExternal` handler). Every fill starts from an explicit
-  user click in the extension popup.
+* **No standing access to pages.** The manifests declare no host
+  permissions and no content scripts. Opening the popup grants
+  `activeTab` for the one tab it opened on; the fill script is injected
+  only when the user picks a match, and only into the page and the
+  frames the browser lets `activeTab` reach (frames on the page's own
+  origin).
+* **Pages cannot trigger a fill.** The injected fill script listens
+  only on the `pasejo-frame` port it opens to the popup; there is no
+  `onMessage` or `onMessageExternal` handler a page could reach. Every
+  fill starts from an explicit user click in the extension popup.
+* **Credentials go only to frames of the matched site.** Before a
+  credential is sent, the popup checks each frame's origin as the
+  browser stamps it on the frame's port (`sender.origin`, else the
+  origin of `sender.url`) — never a value the page supplies. The
+  frame's host has to match the secret under the host's rule: the
+  page's own host (which the host matched to list the secret), the
+  stored URL's exact host, or, for anything else, a fresh host query
+  for the frame's host that returns the same secret. Opaque and
+  non-`http(s)` origins never qualify. Under `activeTab` the browser
+  already keeps cross-origin frames out of reach; the check holds even
+  where a browser would inject further.
+* **A fill targets the page the results were for.** The popup records
+  the tab and origin it opened on and refuses to fill when the active
+  tab, or its origin, has changed by the time a match is picked. Once
+  the fill script runs, a top frame reporting another origin stops the
+  fill as well, and the credential travels over a port bound to the
+  injected document, so a frame that navigates away drops it.
 * **Host replies are validated at the IPC boundary.** The background
   script enforces size/depth limits and per-action type checks on
   everything the native host sends before the popup renders it, so a
@@ -44,16 +67,13 @@ These are properties of the browser extension platform itself. The
 extension cannot fix them without making itself useless, and other
 autofill extensions share them.
 
-### A page can detect that the extension is installed
+### A page can tell that a fill happened
 
-The content script is injected into every `http(s)` frame
-(`matches: ["<all_urls>"]`). A page cannot *talk* to it, but a
-sufficiently motivated page could infer its presence — for example by
-observing the brief outline pulse on an input after a fill, or by
-fingerprinting timing side effects. The alternative — asking the user
-to grant per-site permissions before every fill — trades a marginal
-fingerprinting surface for a substantially worse and *less* safe UX
-(permission-fatigue trains users to click "allow" reflexively).
+The fill script runs in a page only after the user picks a match for
+it. A page cannot *talk* to the script, but it sees the result: the
+values written into its inputs, the `input` / `change` events, and the
+brief outline pulse on each filled input. A page the user fills can
+therefore infer that an autofill extension is installed.
 
 ### Another extension can read filled credentials
 

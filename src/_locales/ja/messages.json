@@ -219,7 +219,7 @@
     "description": "Host error: no store is configured at all."
   },
   "errorIdentityLocked": {
-    "message": "ストアを復号できませんでした。age アイデンティティを ssh-agent に追加してください — ホストはパスフレーズを入力するよう求めることができません。",
+    "message": "復号できませんでした。ホストはパスフレーズで保護されたアイデンティティをスキップします。暗号化されていないかプラグインを使う age アイデンティティを使い、PIN の入力にはグラフィカルな PINENTRY_PROGRAM を設定してください。",
     "description": "Host error: the store could not be decrypted."
   },
   "errorHookFailed": {

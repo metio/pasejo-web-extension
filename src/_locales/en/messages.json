@@ -219,7 +219,7 @@
     "description": "Host error: no store is configured at all."
   },
   "errorIdentityLocked": {
-    "message": "Could not decrypt the store. Add the age identity to ssh-agent — the host cannot prompt for a passphrase.",
+    "message": "Could not decrypt: the host skips passphrase-protected identities. Use an unencrypted or plugin-backed age identity, and a graphical PINENTRY_PROGRAM for PINs.",
     "description": "Host error: the store could not be decrypted."
   },
   "errorHookFailed": {

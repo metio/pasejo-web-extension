@@ -42,16 +42,17 @@ on its own to check for new extension versions.
 
 ## Permissions
 
-The extension declares the following WebExtensions permissions; here is
-why each is needed:
+The extension declares the following WebExtensions permissions and no
+host permissions; here is why each is needed:
 
 | Permission | Why |
 |---|---|
-| `activeTab` | Read the active tab's URL so the popup can search for the matching credential, and inject the fill into that tab. Only granted while the popup is open. |
+| `activeTab` | Granted for one tab when you open the popup (toolbar click or keyboard shortcut). Lets the popup read that tab's URL to search for a matching credential, and lets the extension inject the fill script into that tab. The grant ends when the tab navigates to another site or closes (in Firefox, on any navigation that loads a new page). |
+| `scripting` | Inject the small fill script into the tab when you pick a match, so it can write the username, password, and one-time code into the form. It runs only then, only in the page and its frames on the page's own origin, and only fills frames whose origin matches the credential. |
 | `nativeMessaging` | Talk to the `pasejo browser host` process. |
 | `storage` | Persist the per-host store memory described above. |
-| `webNavigation` | Enumerate iframes inside the active tab so fill works on SSO / embedded-checkout pages whose login form lives in an iframe. Used only at fill time. |
-| `<all_urls>` (content scripts + host permission) | Inject the small fill helper into pages so it can write the username and password into the form when the user clicks *Fill*. The helper does nothing on its own — it waits for a message from the popup. Firefox keeps this permission OFF until you grant it (the popup shows a *Grant access* banner); Chromium grants it at install time. |
+
+A tab you have not opened the popup on is out of the extension's reach, and the extension touches a page only when you pick a match to fill.
 
 ## Source
 

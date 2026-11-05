@@ -219,7 +219,7 @@
     "description": "Host error: no store is configured at all."
   },
   "errorIdentityLocked": {
-    "message": "Impossibile decifrare l'archivio. Aggiungi l'identità age a ssh-agent — l'host non può chiedere una passphrase.",
+    "message": "Impossibile decifrare. L'host salta le identità protette da passphrase: usa un'identità age non cifrata o con plugin e un PINENTRY_PROGRAM grafico per i PIN.",
     "description": "Host error: the store could not be decrypted."
   },
   "errorHookFailed": {

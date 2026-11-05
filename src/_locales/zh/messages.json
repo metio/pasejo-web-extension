@@ -219,7 +219,7 @@
     "description": "Host error: no store is configured at all."
   },
   "errorIdentityLocked": {
-    "message": "无法解密存储。请将 age 身份添加到 ssh-agent — 主机无法提示输入口令。",
+    "message": "无法解密。主机会跳过受密码短语保护的身份：请使用未加密或基于插件的 age 身份，并为 PIN 输入设置图形化的 PINENTRY_PROGRAM。",
     "description": "Host error: the store could not be decrypted."
   },
   "errorHookFailed": {
