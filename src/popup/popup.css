@@ -58,32 +58,6 @@ body {
   text-align: right;
 }
 
-.permission-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, AccentColor 12%, transparent);
-  font-size: 12px;
-}
-
-.permission-banner[hidden] {
-  display: none;
-}
-
-.permission-banner button {
-  font: inherit;
-  color: var(--accent-fg);
-  background: var(--accent);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 4px 8px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
 .controls {
   display: grid;
   grid-template-columns: auto 1fr auto;

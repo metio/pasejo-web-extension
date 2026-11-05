@@ -22,8 +22,6 @@ const EXPOSED = [
   "LEGACY_HOST_KEY_PREFIX",
   "LEGACY_HOST_INDEX_KEY",
   "reconcileLegacyStorage",
-  "checkPageAccess",
-  "revealPermissionBannerIfNeeded",
   "truncateStatus",
   "setStatus",
   "sendBackground",
@@ -47,8 +45,12 @@ const EXPOSED = [
   "button",
   "fillIntoActiveTab",
   "fillAcrossFrames",
-  "findFocusedFrame",
-  "listFrames",
+  "injectFillScript",
+  "createFrameCollector",
+  "orderFramesForFill",
+  "requestFill",
+  "FRAME_HANDSHAKE_TIMEOUT_MS",
+  "FRAME_FILL_TIMEOUT_MS",
   "main",
   "refreshStoresAndQuery",
   "elements",
@@ -102,39 +104,49 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-// fillAcrossFrames sends a `probe-focus` round to every frame before
-// the actual fill round; this helper stubs `api.tabs.sendMessage` so
-// the two rounds are answered separately. `focusedFrameId = null`
-// means "no frame is focused" (the default top-first ordering still
-// applies). `byFrame` is a map from frameId to either the resolved
-// fill reply or an Error to reject with — frames not listed default
-// to `{ ok: false }`.
-function stubProbeAndFill(api, { focusedFrameId = null, byFrame = {} } = {}) {
-  api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
-    if (msg.type === "probe-focus") {
-      return Promise.resolve({
-        ok: true,
-        focused:
-          focusedFrameId !== null && opts.frameId === focusedFrameId,
+// Stands in for `scripting.executeScript`: every entry in `frames`
+// "runs" fill.js — opens a pasejo-frame port carrying the sender the
+// browser would stamp, reports ready (unless `ready: false`), and answers
+// a fill with its `fill` entry: a reply object, "disconnect", or
+// "silent". Returns the ids of the frames that received a fill, in order.
+function stubFrames(api, frames) {
+  const filled = [];
+  api.scripting.executeScript = vi.fn(async ({ target }) => {
+    const results = [];
+    for (const frame of frames) {
+      const port = api.__connectFromContent("pasejo-frame", {
+        tab: { id: frame.tabId ?? target.tabId },
+        frameId: frame.frameId,
+        url: frame.url ?? "https://example.com/login",
+        origin: frame.origin,
       });
+      port.onMessage.addListener((message) => {
+        if (message.type !== "fill") {
+          return;
+        }
+        filled.push(frame.frameId);
+        const reply = frame.fill ?? { ok: false };
+        if (reply === "disconnect") {
+          port.disconnect();
+          return;
+        }
+        if (reply === "silent") {
+          return;
+        }
+        port.postMessage({ type: "fill-result", ...reply });
+      });
+      if (frame.ready !== false) {
+        port.postMessage({
+          type: "ready",
+          focused: frame.focused === true,
+          editableFocused: frame.editableFocused === true,
+        });
+      }
+      results.push({ frameId: frame.frameId, result: true });
     }
-    const handler = byFrame[opts.frameId];
-    if (handler === undefined) {
-      return Promise.resolve({ ok: false });
-    }
-    if (handler instanceof Error) {
-      return Promise.reject(handler);
-    }
-    return Promise.resolve(handler);
+    return results;
   });
-}
-
-// Count only the actual fill calls so assertions stay readable when
-// probe-focus also flows through the same spy.
-function fillCallCount(api) {
-  return api.tabs.sendMessage.mock.calls.filter(
-    ([, msg]) => msg.type === "fill",
-  ).length;
+  return filled;
 }
 
 // popup.js calls `main()` immediately on load — there is no
@@ -159,9 +171,6 @@ async function setUp({
   api.storage.local.get = vi.fn().mockResolvedValue({});
   api.storage.local.set = vi.fn().mockResolvedValue();
   api.storage.local.remove = vi.fn().mockResolvedValue();
-  api.webNavigation.getAllFrames = vi
-    .fn()
-    .mockResolvedValue([{ frameId: 0 }, { frameId: 1 }]);
   globalThis.chrome = api;
   buildPopupDom(document);
   loadClassicScript("src/protocol.js");
@@ -173,7 +182,6 @@ async function setUp({
   api.storage.local.get.mockClear();
   api.storage.local.set.mockClear();
   api.storage.local.remove.mockClear();
-  api.webNavigation.getAllFrames.mockClear();
   popup.elements.status.textContent = "";
   popup.elements.status.classList.remove("error");
   popup.elements.results.replaceChildren();
@@ -209,155 +217,14 @@ describe("popup.js", () => {
     // language (English here) and the call proves the seam was used.
     it("localizes the data-i18n chrome through i18n.getMessage on load", async () => {
       const { api, popup } = await setUp();
-      expect(api.i18n.getMessage).toHaveBeenCalledWith(
-        "grantAccessButton",
-        undefined,
-      );
-      expect(api.i18n.getMessage).toHaveBeenCalledWith(
-        "permissionBannerText",
-        undefined,
-      );
       expect(api.i18n.getMessage).toHaveBeenCalledWith("storeLabel", undefined);
       expect(api.i18n.getMessage).toHaveBeenCalledWith(
         "refreshButtonTitle",
         undefined,
       );
-      expect(popup.elements.grantPermissions.textContent).toBe("Grant access");
+      expect(popup.elements.refresh.textContent).toBe("Refresh");
       expect(popup.elements.refresh.title).toBe("Re-query the host");
       expect(popup.elements.store.getAttribute("aria-label")).toBe("Store");
-    });
-  });
-
-  describe("page-access permission banner (review8 item G)", () => {
-    // Firefox MV3 ships content-script match patterns as opt-in host
-    // permissions. The banner is the popup's discovery surface for
-    // the missing grant; without it the user only ever sees a generic
-    // "no fillable input" error.
-
-    it("stays hidden when the origins are already granted (Chromium / granted-Firefox)", async () => {
-      const { popup } = await setUp();
-      // setUp's default mock resolves `contains` with true and main()
-      // already ran during bootstrap.
-      expect(popup.elements.permissionBanner.hidden).toBe(true);
-    });
-
-    it("appears when permissions.contains reports the origins as not granted", async () => {
-      delete globalThis.PASEJO;
-      delete globalThis.chrome;
-      const api = makeApiMock();
-      api.tabs.query = vi
-        .fn()
-        .mockResolvedValue([{ id: 1, url: "https://example.com" }]);
-      api.runtime.sendMessage = vi.fn().mockResolvedValue({
-        ok: true,
-        response: {
-          protocol_version: 1,
-          stores: [{ name: "personal", default: true }],
-          results: [],
-        },
-      });
-      api.storage.local.get = vi.fn().mockResolvedValue({});
-      api.storage.local.set = vi.fn();
-      api.storage.local.remove = vi.fn();
-      api.permissions.contains = vi.fn().mockResolvedValue(false);
-      globalThis.chrome = api;
-      buildPopupDom(document);
-      loadClassicScript("src/protocol.js");
-      const popup = loadClassicScript("src/popup/popup.js", {
-        expose: EXPOSED,
-      });
-      await flushAsync();
-      await flushAsync();
-      expect(api.permissions.contains).toHaveBeenCalledWith({
-        origins: ["<all_urls>"],
-      });
-      expect(popup.elements.permissionBanner.hidden).toBe(false);
-    });
-
-    it("treats a missing permissions API as granted (banner stays hidden)", async () => {
-      delete globalThis.PASEJO;
-      delete globalThis.chrome;
-      const api = makeApiMock();
-      api.permissions = undefined;
-      api.tabs.query = vi
-        .fn()
-        .mockResolvedValue([{ id: 1, url: "https://example.com" }]);
-      api.runtime.sendMessage = vi.fn().mockResolvedValue({
-        ok: true,
-        response: {
-          protocol_version: 1,
-          stores: [{ name: "personal", default: true }],
-          results: [],
-        },
-      });
-      api.storage.local.get = vi.fn().mockResolvedValue({});
-      api.storage.local.set = vi.fn();
-      api.storage.local.remove = vi.fn();
-      globalThis.chrome = api;
-      buildPopupDom(document);
-      loadClassicScript("src/protocol.js");
-      const popup = loadClassicScript("src/popup/popup.js", {
-        expose: EXPOSED,
-      });
-      await flushAsync();
-      await flushAsync();
-      expect(popup.elements.permissionBanner.hidden).toBe(true);
-    });
-
-    it("treats a throwing permissions.contains as granted so the popup keeps working", async () => {
-      const { api, popup } = await setUp();
-      api.permissions.contains = vi
-        .fn()
-        .mockRejectedValue(new Error("api unavailable"));
-      await popup.revealPermissionBannerIfNeeded();
-      expect(popup.elements.permissionBanner.hidden).toBe(true);
-    });
-
-    it("requests the origins on click and hides the banner when granted", async () => {
-      const { api, popup } = await setUp();
-      popup.elements.permissionBanner.hidden = false;
-      api.permissions.request = vi.fn().mockResolvedValue(true);
-      popup.elements.grantPermissions.click();
-      await flushAsync();
-      expect(api.permissions.request).toHaveBeenCalledWith({
-        origins: ["<all_urls>"],
-      });
-      expect(popup.elements.permissionBanner.hidden).toBe(true);
-      // The reload caveat reaches the user: content scripts only
-      // inject on page load, so already-open tabs need a reload.
-      expect(popup.elements.status.textContent).toMatch(/Reload/);
-    });
-
-    it("keeps the banner when the user denies the request", async () => {
-      const { api, popup } = await setUp();
-      popup.elements.permissionBanner.hidden = false;
-      api.permissions.request = vi.fn().mockResolvedValue(false);
-      popup.elements.grantPermissions.click();
-      await flushAsync();
-      expect(popup.elements.permissionBanner.hidden).toBe(false);
-    });
-
-    it("surfaces a request failure in the status line", async () => {
-      const { api, popup } = await setUp();
-      popup.elements.permissionBanner.hidden = false;
-      api.permissions.request = vi
-        .fn()
-        .mockRejectedValue(new Error("gesture expired"));
-      popup.elements.grantPermissions.click();
-      await flushAsync();
-      expect(popup.elements.status.textContent).toMatch(
-        /Could not request page access: gesture expired/,
-      );
-      expect(popup.elements.permissionBanner.hidden).toBe(false);
-    });
-
-    it("click is a no-op when the permissions API is unavailable", async () => {
-      const { api, popup } = await setUp();
-      popup.elements.permissionBanner.hidden = false;
-      api.permissions = undefined;
-      expect(() => popup.elements.grantPermissions.click()).not.toThrow();
-      await flushAsync();
-      expect(popup.elements.permissionBanner.hidden).toBe(false);
     });
   });
 
@@ -2758,12 +2625,9 @@ describe("popup.js", () => {
 
     it("clicking the row dispatches fillIntoActiveTab", async () => {
       const { api, popup } = await setUp();
-      api.tabs.sendMessage = vi
-        .fn()
-        .mockResolvedValue({
-          ok: true,
-          filled: { username: true, password: true },
-        });
+      stubFrames(api, [
+        { frameId: 0, fill: { ok: true, filled: { username: true, password: true } } },
+      ]);
       api.tabs.query.mockResolvedValueOnce([
         { id: 7, url: "https://example.com" },
       ]);
@@ -2777,17 +2641,14 @@ describe("popup.js", () => {
       popup.elements.results.appendChild(li);
       li.click();
       await flushAsync();
-      expect(api.tabs.sendMessage).toHaveBeenCalled();
+      expect(api.scripting.executeScript).toHaveBeenCalled();
     });
 
     it("Enter and Space on the row trigger fill, other keys do not", async () => {
       const { api, popup } = await setUp();
-      api.tabs.sendMessage = vi
-        .fn()
-        .mockResolvedValue({
-          ok: true,
-          filled: { username: true, password: true },
-        });
+      stubFrames(api, [
+        { frameId: 0, fill: { ok: true, filled: { username: true, password: true } } },
+      ]);
       api.tabs.query.mockResolvedValue([{ id: 7, url: "https://example.com" }]);
       const li = popup.renderMatch({
         name: "alice",
@@ -2800,31 +2661,28 @@ describe("popup.js", () => {
       const e1 = new KeyboardEvent("keydown", { key: "Enter", bubbles: true });
       li.dispatchEvent(e1);
       await flushAsync();
-      expect(api.tabs.sendMessage).toHaveBeenCalled();
+      expect(api.scripting.executeScript).toHaveBeenCalled();
 
-      api.tabs.sendMessage.mockClear();
+      api.scripting.executeScript.mockClear();
       popup.state.filling = false;
       const e2 = new KeyboardEvent("keydown", { key: " ", bubbles: true });
       li.dispatchEvent(e2);
       await flushAsync();
-      expect(api.tabs.sendMessage).toHaveBeenCalled();
+      expect(api.scripting.executeScript).toHaveBeenCalled();
 
-      api.tabs.sendMessage.mockClear();
+      api.scripting.executeScript.mockClear();
       popup.state.filling = false;
       const e3 = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
       li.dispatchEvent(e3);
       await flushAsync();
-      expect(api.tabs.sendMessage).not.toHaveBeenCalled();
+      expect(api.scripting.executeScript).not.toHaveBeenCalled();
     });
 
     it("keydown on the inner Fill button does NOT bubble into a second fill", async () => {
       const { api, popup } = await setUp();
-      api.tabs.sendMessage = vi
-        .fn()
-        .mockResolvedValue({
-          ok: true,
-          filled: { username: true, password: true },
-        });
+      stubFrames(api, [
+        { frameId: 0, fill: { ok: true, filled: { username: true, password: true } } },
+      ]);
       const li = popup.renderMatch({
         name: "alice",
         username: "alice",
@@ -2841,7 +2699,7 @@ describe("popup.js", () => {
       Object.defineProperty(e, "target", { value: fillBtn, configurable: true });
       li.dispatchEvent(e);
       await flushAsync();
-      expect(api.tabs.sendMessage).not.toHaveBeenCalled();
+      expect(api.scripting.executeScript).not.toHaveBeenCalled();
     });
   });
 
@@ -2862,426 +2720,354 @@ describe("popup.js", () => {
     });
   });
 
-  describe("listFrames", () => {
-    it("returns [0] when webNavigation.getAllFrames is unavailable", async () => {
+  describe("injectFillScript", () => {
+    it("injects content/fill.js into every frame of the tab", async () => {
       const { api, popup } = await setUp();
-      api.webNavigation = undefined;
-      await expect(popup.listFrames(1)).resolves.toEqual([0]);
+      api.scripting.executeScript = vi.fn().mockResolvedValue([]);
+      await popup.injectFillScript(7);
+      expect(api.scripting.executeScript).toHaveBeenCalledWith({
+        target: { tabId: 7, allFrames: true },
+        files: ["content/fill.js"],
+      });
     });
 
-    it("returns the frameIds reported by webNavigation", async () => {
+    it("returns the ids of the frames whose injection evaluated to true", async () => {
       const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([
-        { frameId: 0 },
-        { frameId: 7 },
-        { frameId: 9 },
+      api.scripting.executeScript = vi.fn().mockResolvedValue([
+        { frameId: 0, result: true },
+        { frameId: 3, result: true, documentId: "doc-3" },
+        { frameId: 4, error: { message: "no access" } },
+        { frameId: 5, result: false },
+        { result: true },
+        null,
       ]);
-      await expect(popup.listFrames(2)).resolves.toEqual([0, 7, 9]);
+      await expect(popup.injectFillScript(7)).resolves.toEqual([0, 3]);
     });
 
-    it("returns [0] when getAllFrames returns empty (tab closed mid-flight)", async () => {
+    it("returns null when the browser refuses the injection outright", async () => {
       const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([]);
-      await expect(popup.listFrames(2)).resolves.toEqual([0]);
+      api.scripting.executeScript = vi
+        .fn()
+        .mockRejectedValue(new Error("Cannot access contents of the page"));
+      await expect(popup.injectFillScript(7)).resolves.toBeNull();
     });
 
-    it("returns [0] when getAllFrames throws (permission missing)", async () => {
+    it("returns an empty list for a non-array result", async () => {
       const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockRejectedValueOnce(new Error("nope"));
-      await expect(popup.listFrames(2)).resolves.toEqual([0]);
-    });
-
-    it("filters out frames whose navigation errored (item W)", async () => {
-      const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([
-        { frameId: 0, url: "https://example.com" },
-        { frameId: 1, url: "https://example.com/iframe", errorOccurred: true },
-        { frameId: 2, url: "https://example.com/iframe-2" },
-      ]);
-      await expect(popup.listFrames(2)).resolves.toEqual([0, 2]);
-    });
-
-    it("filters out about:blank frames (no content script registered there)", async () => {
-      const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([
-        { frameId: 0, url: "https://example.com" },
-        { frameId: 1, url: "about:blank" },
-        { frameId: 2, url: "https://example.com/widget" },
-      ]);
-      await expect(popup.listFrames(2)).resolves.toEqual([0, 2]);
-    });
-
-    it("returns an empty list when every frame is filtered out (no fallback to [0])", async () => {
-      const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([
-        { frameId: 0, url: "about:blank" },
-        { frameId: 1, url: "https://x.test", errorOccurred: true },
-      ]);
-      // Returning [0] here would re-trigger the wasted round-trip the
-      // fix is designed to avoid (frame 0 IS about:blank above).
-      await expect(popup.listFrames(2)).resolves.toEqual([]);
-    });
-
-    it("keeps a frame whose url field is missing (the chrome.* webNavigation result for some transitional frames)", async () => {
-      const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([
-        { frameId: 0 },
-        { frameId: 1, url: "https://example.com" },
-      ]);
-      // Missing url is not the same as "about:blank"; better to try
-      // the frame and let the per-frame sendMessage catch handle a
-      // miss than to silently skip a candidate that may yet load.
-      await expect(popup.listFrames(2)).resolves.toEqual([0, 1]);
+      api.scripting.executeScript = vi.fn().mockResolvedValue(undefined);
+      await expect(popup.injectFillScript(7)).resolves.toEqual([]);
     });
   });
 
-  describe("dead-frame filtering downstream effects (item W)", () => {
-    it("fillAcrossFrames does not waste a fill round-trip on a filtered-out frame", async () => {
-      const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([
-        { frameId: 0, url: "https://example.com" },
-        { frameId: 1, url: "about:blank" },
-        { frameId: 2, url: "https://example.com/iframe-2", errorOccurred: true },
-        { frameId: 3, url: "https://example.com/login" },
-      ]);
-      stubProbeAndFill(api, {
-        byFrame: {
-          0: { ok: false },
-          3: { ok: true, filled: { username: true, password: true } },
-          // frames 1 and 2 are filtered out — if they were tried at
-          // all the test would still pass (their default reply is
-          // `ok:false`) but the `expect` below pins the call set so
-          // we lock in the win.
-        },
+  describe("frame port collection", () => {
+    it("refuses a pasejo-frame port while no fill is collecting", async () => {
+      const { api } = await setUp();
+      api.__connectFromContent("pasejo-frame", {
+        tab: { id: 7 },
+        frameId: 0,
+        url: "https://example.com/",
       });
-      const reply = await popup.fillAcrossFrames(7, { type: "fill" });
-      expect(reply.ok).toBe(true);
-      const visitedFrames = api.tabs.sendMessage.mock.calls
-        .map(([, , opts]) => opts.frameId)
-        .sort((a, b) => a - b);
-      // Each surviving frame is hit twice (probe-focus + fill once we
-      // stop at frame 3), and nothing else.
-      expect(new Set(visitedFrames)).toEqual(new Set([0, 3]));
+      const pair = api.__streamPairs.at(-1);
+      expect(pair.backgroundPort.disconnect).toHaveBeenCalled();
+    });
+
+    it("ignores ports with any other name", async () => {
+      const { api } = await setUp();
+      api.__connectFromContent("something-else", {
+        tab: { id: 7 },
+        frameId: 0,
+      });
+      const pair = api.__streamPairs.at(-1);
+      expect(pair.backgroundPort.disconnect).not.toHaveBeenCalled();
+    });
+
+    it("refuses ports from another tab, without a frame id, or a second port per frame", async () => {
+      const { api, popup } = await setUp();
+      const collector = popup.createFrameCollector(7);
+      const ports = [
+        { tab: { id: 8 }, frameId: 0 },
+        { tab: { id: 7 } },
+        undefined,
+        { tab: { id: 7 }, frameId: 0 },
+        { tab: { id: 7 }, frameId: 0 },
+      ].map((sender) => {
+        const port = {
+          sender,
+          onMessage: { addListener: vi.fn() },
+          onDisconnect: { addListener: vi.fn() },
+          disconnect: vi.fn(),
+        };
+        collector.accept(port);
+        return port;
+      });
+      expect(ports.map((p) => p.disconnect.mock.calls.length)).toEqual([
+        1, 1, 1, 0, 1,
+      ]);
+    });
+
+    it("waitFor resolves with ready frames in the requested order and ignores a second ready", async () => {
+      const { popup } = await setUp();
+      const collector = popup.createFrameCollector(7);
+      const make = (frameId) => {
+        const port = {
+          sender: { tab: { id: 7 }, frameId },
+          listeners: [],
+          onMessage: { addListener: (l) => port.listeners.push(l) },
+          onDisconnect: { addListener: vi.fn() },
+          disconnect: vi.fn(),
+        };
+        collector.accept(port);
+        return port;
+      };
+      const top = make(0);
+      const child = make(2);
+      const waiting = collector.waitFor([2, 0], 1_000);
+      child.listeners[0]({ type: "ready", editableFocused: true });
+      child.listeners[0]({ type: "ready", focused: true });
+      top.listeners[0]({ type: "other" });
+      top.listeners[0](null);
+      top.listeners[0]({ type: "ready", focused: true });
+      const frames = await waiting;
+      expect(frames.map((f) => f.frameId)).toEqual([2, 0]);
+      expect(frames[0]).toMatchObject({ focused: false, editableFocused: true });
+      expect(frames[1]).toMatchObject({ focused: true, editableFocused: false });
+    });
+
+    it("waitFor drops frames that disconnected and stops waiting for them", async () => {
+      const { popup } = await setUp();
+      const collector = popup.createFrameCollector(7);
+      let disconnect;
+      const port = {
+        sender: { tab: { id: 7 }, frameId: 1 },
+        onMessage: { addListener: vi.fn() },
+        onDisconnect: { addListener: (l) => (disconnect = l) },
+        disconnect: vi.fn(),
+      };
+      collector.accept(port);
+      const waiting = collector.waitFor([1], 60_000);
+      disconnect();
+      await expect(waiting).resolves.toEqual([]);
+    });
+
+    it("waitFor gives up on silent frames after the timeout", async () => {
+      const { popup } = await setUp();
+      vi.useFakeTimers();
+      const collector = popup.createFrameCollector(7);
+      const waiting = collector.waitFor([0, 1], 2_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(waiting).resolves.toEqual([]);
+    });
+
+    it("close disconnects every collected port", async () => {
+      const { popup } = await setUp();
+      const collector = popup.createFrameCollector(7);
+      const port = {
+        sender: { tab: { id: 7 }, frameId: 0 },
+        onMessage: { addListener: vi.fn() },
+        onDisconnect: { addListener: vi.fn() },
+        disconnect: vi.fn(() => {
+          throw new Error("already gone");
+        }),
+      };
+      collector.accept(port);
+      expect(() => collector.close()).not.toThrow();
+      expect(port.disconnect).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("orderFramesForFill", () => {
+    it("keeps the given order when no frame stands out", async () => {
+      const { popup } = await setUp();
+      const frames = [{ frameId: 0 }, { frameId: 1 }];
+      expect(popup.orderFramesForFill(frames)).toEqual(frames);
+    });
+
+    it("puts the frame holding focus first", async () => {
+      const { popup } = await setUp();
+      const frames = [
+        { frameId: 0 },
+        { frameId: 1, editableFocused: true },
+        { frameId: 2, focused: true },
+      ];
+      expect(popup.orderFramesForFill(frames).map((f) => f.frameId)).toEqual([
+        2, 0, 1,
+      ]);
+    });
+
+    it("falls back to the frame whose focused element is fillable", async () => {
+      const { popup } = await setUp();
+      const frames = [{ frameId: 0 }, { frameId: 1, editableFocused: true }];
+      expect(popup.orderFramesForFill(frames).map((f) => f.frameId)).toEqual([
+        1, 0,
+      ]);
+    });
+  });
+
+  describe("requestFill", () => {
+    function fakeFramePort() {
+      const port = {
+        message: [],
+        disconnect: [],
+        onMessage: { addListener: (l) => port.message.push(l) },
+        onDisconnect: { addListener: (l) => port.disconnect.push(l) },
+        postMessage: vi.fn(),
+      };
+      return port;
+    }
+
+    it("resolves with the frame's fill-result and ignores other messages", async () => {
+      const { popup } = await setUp();
+      const port = fakeFramePort();
+      const reply = popup.requestFill({ port }, { type: "fill" });
+      port.message[0]({ type: "ready" });
+      port.message[0](null);
+      port.message[0]({ type: "fill-result", ok: true, filled: {} });
+      port.message[0]({ type: "fill-result", ok: false });
+      await expect(reply).resolves.toEqual({
+        type: "fill-result",
+        ok: true,
+        filled: {},
+      });
+      expect(port.postMessage).toHaveBeenCalledWith({ type: "fill" });
+    });
+
+    it("coerces a non-boolean ok to false", async () => {
+      const { popup } = await setUp();
+      const port = fakeFramePort();
+      const reply = popup.requestFill({ port }, { type: "fill" });
+      port.message[0]({ type: "fill-result", ok: "yes" });
+      await expect(reply).resolves.toMatchObject({ ok: false });
+    });
+
+    it("resolves ok:false when the frame goes away", async () => {
+      const { popup } = await setUp();
+      const port = fakeFramePort();
+      const reply = popup.requestFill({ port }, { type: "fill" });
+      port.disconnect[0]();
+      await expect(reply).resolves.toEqual({ ok: false });
+    });
+
+    it("resolves ok:false when posting throws", async () => {
+      const { popup } = await setUp();
+      const port = fakeFramePort();
+      port.postMessage = vi.fn(() => {
+        throw new Error("gone");
+      });
+      await expect(
+        popup.requestFill({ port }, { type: "fill" }),
+      ).resolves.toEqual({ ok: false });
+    });
+
+    it("resolves ok:false when the frame stays silent", async () => {
+      const { popup } = await setUp();
+      vi.useFakeTimers();
+      const port = fakeFramePort();
+      const reply = popup.requestFill({ port }, { type: "fill" });
+      await vi.advanceTimersByTimeAsync(popup.FRAME_FILL_TIMEOUT_MS);
+      await expect(reply).resolves.toEqual({ ok: false });
     });
   });
 
   describe("fillAcrossFrames", () => {
     it("walks frames in order and returns the first ok reply", async () => {
       const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([
-        { frameId: 0 },
-        { frameId: 1 },
-        { frameId: 2 },
+      const filled = stubFrames(api, [
+        { frameId: 0, fill: { ok: false } },
+        { frameId: 1, fill: { ok: true, filled: { username: true, password: true } } },
+        { frameId: 2, fill: { ok: true } },
       ]);
-      stubProbeAndFill(api, {
-        byFrame: {
-          0: { ok: false },
-          1: { ok: true, filled: { username: true, password: true } },
-          2: { ok: true },
-        },
-      });
       const reply = await popup.fillAcrossFrames(7, { type: "fill" });
       expect(reply.ok).toBe(true);
       // Stops at the first ok=true (frame 1); frame 2 is not tried.
-      expect(fillCallCount(api)).toBe(2);
+      expect(filled).toEqual([0, 1]);
     });
 
-    it("skips frames that throw (no content script) and tries the next", async () => {
+    it("skips frames that disconnect mid-fill and tries the next", async () => {
       const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([
-        { frameId: 0 },
-        { frameId: 1 },
+      const filled = stubFrames(api, [
+        { frameId: 0, fill: "disconnect" },
+        { frameId: 1, fill: { ok: true } },
       ]);
-      stubProbeAndFill(api, {
-        byFrame: {
-          0: new Error("no receiver"),
-          1: { ok: true },
-        },
-      });
       const reply = await popup.fillAcrossFrames(7, { type: "fill" });
       expect(reply.ok).toBe(true);
+      expect(filled).toEqual([0, 1]);
     });
 
     it("returns { ok: false } when no frame reports success", async () => {
       const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
-      stubProbeAndFill(api, { byFrame: { 0: { ok: false } } });
+      stubFrames(api, [{ frameId: 0, fill: { ok: false } }]);
       const reply = await popup.fillAcrossFrames(7, { type: "fill" });
-      expect(reply).toEqual({ ok: false });
-    });
-  });
-
-  describe("focus-aware ordering (item T)", () => {
-    it("tries the focused frame BEFORE the top frame when both have fillable inputs", async () => {
-      const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([
-        { frameId: 0 },
-        { frameId: 1 },
-      ]);
-      stubProbeAndFill(api, {
-        focusedFrameId: 1,
-        byFrame: {
-          0: { ok: true, filled: { username: true, password: true } },
-          1: { ok: true, filled: { username: true, password: true } },
-        },
-      });
-      const reply = await popup.fillAcrossFrames(7, { type: "fill" });
-      expect(reply.ok).toBe(true);
-      // The focused frame (1) is consulted first and succeeds — frame
-      // 0 is never asked to fill.
-      const fillFrames = api.tabs.sendMessage.mock.calls
-        .filter(([, msg]) => msg.type === "fill")
-        .map(([, , opts]) => opts.frameId);
-      expect(fillFrames).toEqual([1]);
+      expect(reply.ok).toBe(false);
     });
 
-    it("falls back to top-first walking when no frame reports focus", async () => {
+    it("reports noAccess when the browser refuses the injection", async () => {
       const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([
-        { frameId: 0 },
-        { frameId: 1 },
-        { frameId: 2 },
-      ]);
-      stubProbeAndFill(api, {
-        focusedFrameId: null, // no frame is focused
-        byFrame: {
-          0: { ok: false },
-          1: { ok: true, filled: { username: true, password: true } },
-          2: { ok: true },
-        },
-      });
-      const reply = await popup.fillAcrossFrames(7, { type: "fill" });
-      expect(reply.ok).toBe(true);
-      const fillFrames = api.tabs.sendMessage.mock.calls
-        .filter(([, msg]) => msg.type === "fill")
-        .map(([, , opts]) => opts.frameId);
-      // Top-first: 0, then 1 (which succeeds and stops the walk).
-      expect(fillFrames).toEqual([0, 1]);
+      api.scripting.executeScript = vi
+        .fn()
+        .mockRejectedValue(new Error("Cannot access a chrome:// URL"));
+      await expect(
+        popup.fillAcrossFrames(7, { type: "fill" }),
+      ).resolves.toEqual({ ok: false, noAccess: true });
     });
 
-    it("falls through to top-first when the focused frame has no fillable input", async () => {
+    it("tries the focused frame BEFORE the top frame", async () => {
       const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([
-        { frameId: 0 },
-        { frameId: 1 },
-        { frameId: 2 },
+      const filled = stubFrames(api, [
+        { frameId: 0, fill: { ok: true } },
+        { frameId: 1, editableFocused: true, fill: { ok: true } },
       ]);
-      stubProbeAndFill(api, {
-        focusedFrameId: 2,
-        byFrame: {
-          0: { ok: true, filled: { username: true, password: true } },
-          1: { ok: true, filled: { username: true, password: true } },
-          2: { ok: false },
-        },
-      });
-      const reply = await popup.fillAcrossFrames(7, { type: "fill" });
-      expect(reply.ok).toBe(true);
-      const fillFrames = api.tabs.sendMessage.mock.calls
-        .filter(([, msg]) => msg.type === "fill")
-        .map(([, , opts]) => opts.frameId);
-      // Focused frame 2 is tried first and returns ok:false; we move
-      // on to top-first order [0, 1], landing on 0.
-      expect(fillFrames).toEqual([2, 0]);
-    });
-
-    it("does not try the focused frame twice when the fall-through hits the rest of the list", async () => {
-      const { api, popup } = await setUp();
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([
-        { frameId: 0 },
-        { frameId: 1 },
-      ]);
-      stubProbeAndFill(api, {
-        focusedFrameId: 0,
-        byFrame: {
-          0: { ok: false },
-          1: { ok: true, filled: { username: true, password: true } },
-        },
-      });
       await popup.fillAcrossFrames(7, { type: "fill" });
-      const fillFrames = api.tabs.sendMessage.mock.calls
-        .filter(([, msg]) => msg.type === "fill")
-        .map(([, , opts]) => opts.frameId);
-      // Focused frame 0 first; on failure walk the rest, skipping 0
-      // again — never duplicate the focused id.
-      expect(fillFrames).toEqual([0, 1]);
-    });
-  });
-
-  describe("findFocusedFrame", () => {
-    it("returns the frameId of the only frame that reports focus", async () => {
-      const { api, popup } = await setUp();
-      stubProbeAndFill(api, { focusedFrameId: 3 });
-      const reply = await popup.findFocusedFrame(7, [0, 1, 3]);
-      expect(reply).toBe(3);
+      expect(filled).toEqual([1]);
     });
 
-    it("returns null when no frame reports focus", async () => {
+    it("does not try the preferred frame twice when it fails", async () => {
       const { api, popup } = await setUp();
-      stubProbeAndFill(api, { focusedFrameId: null });
-      const reply = await popup.findFocusedFrame(7, [0, 1, 2]);
-      expect(reply).toBeNull();
+      const filled = stubFrames(api, [
+        { frameId: 0, focused: true, fill: { ok: false } },
+        { frameId: 1, fill: { ok: true } },
+      ]);
+      await popup.fillAcrossFrames(7, { type: "fill" });
+      expect(filled).toEqual([0, 1]);
     });
 
-    it("returns null when no frames were given", async () => {
+    it("never sends a fill to a frame that did not report ready", async () => {
       const { api, popup } = await setUp();
-      stubProbeAndFill(api, { focusedFrameId: null });
-      const reply = await popup.findFocusedFrame(7, []);
-      expect(reply).toBeNull();
+      vi.useFakeTimers();
+      const filled = stubFrames(api, [
+        { frameId: 0, ready: false, fill: { ok: true } },
+      ]);
+      const reply = popup.fillAcrossFrames(7, { type: "fill" });
+      await vi.advanceTimersByTimeAsync(popup.FRAME_HANDSHAKE_TIMEOUT_MS);
+      await expect(reply).resolves.toEqual({ ok: false });
+      expect(filled).toEqual([]);
     });
 
-    it("treats a probe that throws as 'not focused' (frame has no content script)", async () => {
+    it("closes every frame port and stops collecting once done", async () => {
       const { api, popup } = await setUp();
-      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
-        if (msg.type !== "probe-focus") {
-          return Promise.resolve({ ok: false });
-        }
-        if (opts.frameId === 0) {
-          return Promise.reject(new Error("no receiver"));
-        }
-        if (opts.frameId === 1) {
-          return Promise.resolve({ ok: true, focused: true });
-        }
-        return Promise.resolve({ ok: true, focused: false });
-      });
-      const reply = await popup.findFocusedFrame(7, [0, 1, 2]);
-      expect(reply).toBe(1);
+      stubFrames(api, [{ frameId: 0, fill: { ok: true } }]);
+      await popup.fillAcrossFrames(7, { type: "fill" });
+      const framePair = api.__streamPairs.at(-1);
+      expect(framePair.backgroundPort.disconnect).toHaveBeenCalled();
+      // A late port is refused now that no fill is collecting.
+      api.__connectFromContent("pasejo-frame", { tab: { id: 7 }, frameId: 0 });
+      expect(api.__streamPairs.at(-1).backgroundPort.disconnect).toHaveBeenCalled();
     });
 
-    it("ignores frames whose probe replies ok=false", async () => {
+    it("leaves a newer fill's collector in place when an older one finishes", async () => {
       const { api, popup } = await setUp();
-      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
-        if (msg.type !== "probe-focus") {
-          return Promise.resolve({ ok: false });
-        }
-        if (opts.frameId === 0) {
-          return Promise.resolve({ ok: false });
-        }
-        return Promise.resolve({ ok: true, focused: false });
-      });
-      const reply = await popup.findFocusedFrame(7, [0, 1]);
-      expect(reply).toBeNull();
-    });
-
-    it("picks the first focused frame when several happen to report focused (defensive)", async () => {
-      const { api, popup } = await setUp();
-      api.tabs.sendMessage = vi.fn((_tabId, msg) => {
-        if (msg.type !== "probe-focus") {
-          return Promise.resolve({ ok: false });
-        }
-        return Promise.resolve({ ok: true, focused: true });
-      });
-      const reply = await popup.findFocusedFrame(7, [3, 5, 9]);
-      expect(reply).toBe(3);
-    });
-
-    // --- recency-based frame picking (review8 item C) ------------------
-    // `document.hasFocus()` is false on every frame while the popup
-    // holds the window focus, so the probe carries a second signal:
-    // when a fill-relevant input in that frame last received focus.
-    // The most recent within the recency window wins.
-
-    function stubProbeWithRecency(api, byFrame) {
-      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
-        if (msg.type !== "probe-focus") {
-          return Promise.resolve({ ok: false });
-        }
-        const reply = byFrame[opts.frameId];
-        if (reply === undefined) {
-          return Promise.resolve({
-            ok: true,
-            focused: false,
-            lastEditableFocusAt: 0,
-          });
-        }
-        return Promise.resolve({ ok: true, focused: false, ...reply });
-      });
-    }
-
-    it("picks the frame whose editable field most recently held focus when no frame reports hasFocus (item C)", async () => {
-      const { api, popup } = await setUp();
-      // Pin the clock: other tests in this file spy Date.now with
-      // small constants and the spies survive across tests, so a
-      // relative `Date.now() - 30_000` could go negative and route
-      // through the wrong guard.
-      const now = 10_000_000;
-      vi.spyOn(Date, "now").mockReturnValue(now);
-      stubProbeWithRecency(api, {
-        0: { lastEditableFocusAt: now - 30_000 },
-        1: { lastEditableFocusAt: now - 5_000 },
-        2: { lastEditableFocusAt: 0 },
-      });
-      const reply = await popup.findFocusedFrame(7, [0, 1, 2]);
-      expect(reply).toBe(1);
-    });
-
-    it("ignores editable-focus timestamps older than the recency window", async () => {
-      const { api, popup } = await setUp();
-      const now = 10_000_000;
-      vi.spyOn(Date, "now").mockReturnValue(now);
-      stubProbeWithRecency(api, {
-        0: { lastEditableFocusAt: now - 120_000 },
-        1: { lastEditableFocusAt: now - 90_000 },
-      });
-      const reply = await popup.findFocusedFrame(7, [0, 1]);
-      expect(reply).toBeNull();
-    });
-
-    it("prefers an actual hasFocus=true frame over any recency timestamp", async () => {
-      const { api, popup } = await setUp();
-      const now = 10_000_000;
-      vi.spyOn(Date, "now").mockReturnValue(now);
-      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
-        if (msg.type !== "probe-focus") {
-          return Promise.resolve({ ok: false });
-        }
-        if (opts.frameId === 2) {
-          return Promise.resolve({
-            ok: true,
-            focused: true,
-            lastEditableFocusAt: 0,
-          });
-        }
-        return Promise.resolve({
-          ok: true,
-          focused: false,
-          lastEditableFocusAt: now - 1_000,
-        });
-      });
-      const reply = await popup.findFocusedFrame(7, [0, 1, 2]);
-      expect(reply).toBe(2);
-    });
-
-    it("ignores a non-numeric lastEditableFocusAt (defensive against a skewed content script)", async () => {
-      const { api, popup } = await setUp();
-      stubProbeWithRecency(api, {
-        0: { lastEditableFocusAt: "yesterday" },
-      });
-      const reply = await popup.findFocusedFrame(7, [0]);
-      expect(reply).toBeNull();
-    });
-
-    it("probes every frame in one parallel wave (no sequential pre-check)", async () => {
-      const { api, popup } = await setUp();
-      const calls = [];
-      api.tabs.sendMessage = vi.fn((_tabId, msg, opts) => {
-        if (msg.type !== "probe-focus") {
-          return Promise.resolve({ ok: false });
-        }
-        calls.push(opts.frameId);
-        return Promise.resolve({
-          ok: true,
-          focused: false,
-          lastEditableFocusAt: 0,
-        });
-      });
-      const reply = await popup.findFocusedFrame(7, [0, 1, 2, 3]);
-      expect(reply).toBeNull();
-      // Every frame is asked exactly once. The previous top-frame
-      // pre-check optimised for a hasFocus=true answer that never
-      // happens in production (the popup holds the focus), so it
-      // only added a sequential round-trip — superseded by the
-      // recency-signal design.
-      expect(calls.sort((a, b) => a - b)).toEqual([0, 1, 2, 3]);
+      const first = deferred();
+      api.scripting.executeScript = vi
+        .fn()
+        .mockReturnValueOnce(first.promise)
+        .mockResolvedValueOnce([]);
+      const older = popup.fillAcrossFrames(7, { type: "fill" });
+      const newer = popup.fillAcrossFrames(7, { type: "fill" });
+      await newer;
+      first.resolve([]);
+      await older;
+      // Neither attempt left a collector behind.
+      api.__connectFromContent("pasejo-frame", { tab: { id: 7 }, frameId: 0 });
+      expect(api.__streamPairs.at(-1).backgroundPort.disconnect).toHaveBeenCalled();
     });
   });
 
@@ -3306,12 +3092,7 @@ describe("popup.js", () => {
       api.tabs.query.mockResolvedValueOnce([
         { id: 1, url: "https://x.test" },
       ]);
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
-      stubProbeAndFill(api, {
-        byFrame: {
-          0: { ok: true, filled: { username: true, password: false } },
-        },
-      });
+      stubFrames(api, [{ frameId: 0, fill: { ok: true, filled: { username: true, password: false } } }]);
       await popup.fillIntoActiveTab({ name: "alice", username: "alice" });
       expect(popup.elements.status.textContent).toMatch(
         /Filled username for alice/,
@@ -3324,12 +3105,7 @@ describe("popup.js", () => {
       api.tabs.query.mockResolvedValueOnce([
         { id: 1, url: "https://x.test" },
       ]);
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
-      stubProbeAndFill(api, {
-        byFrame: {
-          0: { ok: true, filled: { username: true, password: true } },
-        },
-      });
+      stubFrames(api, [{ frameId: 0, fill: { ok: true, filled: { username: true, password: true } } }]);
       await popup.fillIntoActiveTab({
         name: "alice",
         username: "alice",
@@ -3343,12 +3119,7 @@ describe("popup.js", () => {
       api.tabs.query.mockResolvedValueOnce([
         { id: 1, url: "https://x.test" },
       ]);
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
-      stubProbeAndFill(api, {
-        byFrame: {
-          0: { ok: true, filled: { username: true, password: true, otp: true } },
-        },
-      });
+      stubFrames(api, [{ frameId: 0, fill: { ok: true, filled: { username: true, password: true, otp: true } } }]);
       await popup.fillIntoActiveTab({
         name: "alice",
         username: "alice",
@@ -3365,15 +3136,10 @@ describe("popup.js", () => {
       api.tabs.query.mockResolvedValueOnce([
         { id: 1, url: "https://x.test" },
       ]);
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
-      stubProbeAndFill(api, {
-        byFrame: {
-          0: {
+      stubFrames(api, [{ frameId: 0, fill: {
             ok: true,
             filled: { username: true, password: false, otp: true },
-          },
-        },
-      });
+          } }]);
       await popup.fillIntoActiveTab({
         name: "alice",
         username: "alice",
@@ -3390,15 +3156,10 @@ describe("popup.js", () => {
       api.tabs.query.mockResolvedValueOnce([
         { id: 1, url: "https://x.test" },
       ]);
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
-      stubProbeAndFill(api, {
-        byFrame: {
-          0: {
+      stubFrames(api, [{ frameId: 0, fill: {
             ok: true,
             filled: { username: false, password: false, otp: true },
-          },
-        },
-      });
+          } }]);
       await popup.fillIntoActiveTab({ name: "alice", otp: "123456" });
       expect(popup.elements.status.textContent).toBe(
         "Filled the one-time code for alice.",
@@ -3410,13 +3171,27 @@ describe("popup.js", () => {
       api.tabs.query.mockResolvedValueOnce([
         { id: 1, url: "https://x.test" },
       ]);
-      api.webNavigation.getAllFrames.mockResolvedValueOnce([{ frameId: 0 }]);
-      stubProbeAndFill(api, { byFrame: { 0: { ok: false } } });
+      stubFrames(api, [{ frameId: 0, fill: { ok: false } }]);
       await popup.fillIntoActiveTab({ name: "alice", username: "alice" });
       expect(popup.elements.status.textContent).toMatch(/No frame/);
       expect(popup.state.filling).toBe(false);
     });
 
+    it("explains that the browser keeps the extension off the page when injection is refused", async () => {
+      const { api, popup } = await setUp();
+      api.tabs.query.mockResolvedValueOnce([
+        { id: 1, url: "https://x.test" },
+      ]);
+      api.scripting.executeScript = vi
+        .fn()
+        .mockRejectedValue(new Error("Cannot access contents of the page"));
+      await popup.fillIntoActiveTab({ name: "alice", username: "alice" });
+      expect(popup.elements.status.textContent).toMatch(
+        /pasejo cannot fill this page/,
+      );
+      expect(popup.elements.status.classList.contains("error")).toBe(true);
+      expect(popup.state.filling).toBe(false);
+    });
   });
 
   describe("refreshStoresAndQuery (helper, item Q)", () => {
@@ -3674,9 +3449,6 @@ describe("popup.js", () => {
       api.storage.local.get = vi.fn().mockResolvedValue({});
       api.storage.local.set = vi.fn();
       api.storage.local.remove = vi.fn();
-      api.webNavigation.getAllFrames = vi
-        .fn()
-        .mockResolvedValue([{ frameId: 0 }]);
       globalThis.chrome = api;
       buildPopupDom(document);
       loadClassicScript("src/protocol.js");
@@ -3742,9 +3514,6 @@ describe("popup.js", () => {
       });
       api.storage.local.set = vi.fn();
       api.storage.local.remove = vi.fn();
-      api.webNavigation.getAllFrames = vi
-        .fn()
-        .mockResolvedValue([{ frameId: 0 }]);
       globalThis.chrome = api;
       buildPopupDom(document);
       loadClassicScript("src/protocol.js");

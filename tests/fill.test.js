@@ -10,33 +10,54 @@ import {
   vi,
 } from "vitest";
 
-import { loadClassicScript } from "./helpers/load-script.js";
+import {
+  evaluateClassicScript,
+  loadClassicScript,
+} from "./helpers/load-script.js";
 import { makeApiMock } from "./helpers/mock-api.js";
 
-// fill.js is wrapped in an IIFE — every helper inside is module-private
-// once the content script registers its message listener. Tests
-// therefore drive the public surface (the runtime.onMessage listener)
-// and assert on (a) the DOM mutations the fill applied and (b) the
-// `sendResponse` payload the listener emitted.
+// fill.js is wrapped in an IIFE — every helper inside is private. Tests
+// therefore drive its public surface, the `pasejo-frame` port it opens
+// on load, and assert on (a) the DOM mutations a fill applied and (b) the
+// messages the script posted back on the port.
 
-function callListener(api, message) {
-  const [listener] = api.__onMessageListeners;
-  if (!listener) {
-    throw new Error("fill.js never registered a message listener");
+// Every message any loaded fill.js posted on its port, in order.
+let posted = [];
+
+// The extension-facing half of the port the most recently loaded
+// fill.js opened.
+function framePort(api) {
+  const pair = api.__streamPairs.at(-1);
+  if (!pair) {
+    throw new Error("fill.js never opened its port");
   }
-  return new Promise((resolve) => {
-    let replied = false;
-    const sendResponse = (value) => {
-      replied = true;
-      resolve(value);
-    };
-    const kept = listener(message, { id: "test" }, sendResponse);
-    if (!replied && !kept) {
-      // Early-return listener that decided not to handle the message
-      // (e.g. non-fill type) — no reply, channel not kept open.
-      resolve(undefined);
-    }
-  });
+  return pair.backgroundPort;
+}
+
+// The `ready` message the most recently loaded fill.js posted.
+function lastReady() {
+  return posted.filter((m) => m.type === "ready").at(-1);
+}
+
+// Posts `message` to the content script and resolves with its
+// `fill-result` reply minus the `type` tag, or undefined when the script
+// did not answer. The mock port delivers synchronously.
+async function callListener(api, message) {
+  const before = posted.length;
+  framePort(api).postMessage(message);
+  const reply = posted.slice(before).find((m) => m.type === "fill-result");
+  if (!reply) {
+    return undefined;
+  }
+  const { type: _type, ...rest } = reply;
+  return rest;
+}
+
+// Loads fill.js again so its `ready` message reflects the DOM the test
+// has built since `beforeEach`.
+function reloadFiller() {
+  loadClassicScript("src/content/fill.js");
+  return lastReady();
 }
 
 // Force a non-zero bounding rect and a "visible" computed style so
@@ -137,6 +158,10 @@ describe("fill.js content script", () => {
     api = makeApiMock();
     globalThis.chrome = api;
     document.body.innerHTML = "";
+    posted = [];
+    api.runtime.onConnect.addListener((port) => {
+      port.onMessage.addListener((message) => posted.push(message));
+    });
     loadClassicScript("src/content/fill.js");
   });
 
@@ -148,9 +173,16 @@ describe("fill.js content script", () => {
     document.body.innerHTML = "";
   });
 
-  describe("listener wiring", () => {
-    it("registers exactly one runtime.onMessage listener on load", () => {
-      expect(api.runtime.onMessage.addListener).toHaveBeenCalledTimes(1);
+  describe("port wiring", () => {
+    it("opens exactly one pasejo-frame port on load", () => {
+      expect(api.runtime.connect).toHaveBeenCalledTimes(1);
+      expect(api.runtime.connect).toHaveBeenCalledWith({
+        name: "pasejo-frame",
+      });
+    });
+
+    it("evaluates to true, the injection result the popup reads", () => {
+      expect(evaluateClassicScript("src/content/fill.js")).toBe(true);
     });
 
     it("ignores messages without a recognised type", async () => {
@@ -162,104 +194,84 @@ describe("fill.js content script", () => {
       const reply = await callListener(api, null);
       expect(reply).toBeUndefined();
     });
+
+    it("tags its fill reply as a fill-result", async () => {
+      makeVisibleInput("password");
+      framePort(api).postMessage({ type: "fill", password: "p" });
+      expect(posted.at(-1)).toMatchObject({ type: "fill-result", ok: true });
+    });
   });
 
-  describe("probe-focus (item T)", () => {
+  describe("ready message (frame ordering facts)", () => {
     // happy-dom's `document.hasFocus()` default varies across versions;
     // we stub it explicitly so each test exercises the contract
     // deterministically rather than relying on the engine's defaults.
 
-    it("reports `focused: true` when document.hasFocus() is true", async () => {
+    it("reports `focused: true` when document.hasFocus() is true", () => {
       vi.spyOn(document, "hasFocus").mockReturnValue(true);
-      const reply = await callListener(api, { type: "probe-focus" });
-      expect(reply).toEqual({
-        ok: true,
+      expect(reloadFiller()).toEqual({
+        type: "ready",
         focused: true,
-        lastEditableFocusAt: 0,
+        editableFocused: false,
       });
     });
 
-    it("reports `focused: false` when document.hasFocus() is false", async () => {
+    it("reports `focused: false` when document.hasFocus() is false", () => {
       vi.spyOn(document, "hasFocus").mockReturnValue(false);
-      const reply = await callListener(api, { type: "probe-focus" });
-      expect(reply).toEqual({
-        ok: true,
+      expect(reloadFiller()).toEqual({
+        type: "ready",
         focused: false,
-        lastEditableFocusAt: 0,
+        editableFocused: false,
       });
     });
 
-    it("reports the focusin timestamp after a fill-relevant input received focus (review8 item C)", async () => {
-      vi.spyOn(document, "hasFocus").mockReturnValue(false);
-      vi.spyOn(Date, "now").mockReturnValue(1_234_567);
-      const password = makeVisibleInput("password");
-      password.dispatchEvent(
-        new FocusEvent("focusin", { bubbles: true, composed: true }),
-      );
-      const reply = await callListener(api, { type: "probe-focus" });
-      expect(reply.lastEditableFocusAt).toBe(1_234_567);
+    it("reports `editableFocused` when a password input holds focus", () => {
+      makeVisibleInput("password").focus();
+      expect(reloadFiller().editableFocused).toBe(true);
     });
 
-    it("updates the timestamp for username-capable types too", async () => {
-      vi.spyOn(Date, "now").mockReturnValue(42_000);
-      const email = makeVisibleInput("email", { props: { name: "email" } });
-      email.dispatchEvent(
-        new FocusEvent("focusin", { bubbles: true, composed: true }),
-      );
-      const reply = await callListener(api, { type: "probe-focus" });
-      expect(reply.lastEditableFocusAt).toBe(42_000);
+    it("reports `editableFocused` for username-capable types too", () => {
+      makeVisibleInput("email", { props: { name: "email" } }).focus();
+      expect(reloadFiller().editableFocused).toBe(true);
     });
 
-    it("ignores focusin on inputs a fill would never target (checkbox)", async () => {
-      vi.spyOn(Date, "now").mockReturnValue(99_000);
-      const checkbox = makeVisibleInput("checkbox");
-      checkbox.dispatchEvent(
-        new FocusEvent("focusin", { bubbles: true, composed: true }),
-      );
-      const reply = await callListener(api, { type: "probe-focus" });
-      expect(reply.lastEditableFocusAt).toBe(0);
+    it("does not count focus on an input a fill would never target (checkbox)", () => {
+      makeVisibleInput("checkbox").focus();
+      expect(reloadFiller().editableFocused).toBe(false);
     });
 
-    it("ignores focusin on non-input elements", async () => {
-      vi.spyOn(Date, "now").mockReturnValue(77_000);
+    it("does not count focus on a non-input element", () => {
       const button = document.createElement("button");
       document.body.appendChild(button);
-      button.dispatchEvent(
-        new FocusEvent("focusin", { bubbles: true, composed: true }),
-      );
-      const reply = await callListener(api, { type: "probe-focus" });
-      expect(reply.lastEditableFocusAt).toBe(0);
+      button.focus();
+      expect(reloadFiller().editableFocused).toBe(false);
     });
 
-    it("sees through open shadow roots via composedPath (the focusin target is retargeted to the host)", async () => {
-      vi.spyOn(Date, "now").mockReturnValue(55_000);
+    it("sees an input focused inside an open shadow root", () => {
       const { input } = attachShadowInput("password");
-      input.dispatchEvent(
-        new FocusEvent("focusin", { bubbles: true, composed: true }),
-      );
-      const reply = await callListener(api, { type: "probe-focus" });
-      expect(reply.lastEditableFocusAt).toBe(55_000);
+      input.focus();
+      expect(reloadFiller().editableFocused).toBe(true);
     });
 
-    it("does not mutate the DOM (probe is read-only)", async () => {
+    it("does not mutate the DOM", () => {
       vi.spyOn(document, "hasFocus").mockReturnValue(true);
       const password = makeVisibleInput("password");
       const observer = vi.fn();
       password.addEventListener("input", observer);
       password.addEventListener("change", observer);
-      await callListener(api, { type: "probe-focus" });
+      reloadFiller();
       expect(observer).not.toHaveBeenCalled();
       expect(password.value).toBe("");
     });
   });
 
-  describe("listener wiring (defensive)", () => {
-    it("does not throw when loaded without a WebExtensions API on globalThis", () => {
+  describe("port wiring (defensive)", () => {
+    it("does not throw and evaluates to false without a WebExtensions API on globalThis", () => {
       // Wipe out both globals so the `globalThis.browser ?? globalThis.chrome`
       // resolution yields undefined and fill.js hits its early `return`.
       delete globalThis.browser;
       delete globalThis.chrome;
-      expect(() => loadClassicScript("src/content/fill.js")).not.toThrow();
+      expect(evaluateClassicScript("src/content/fill.js")).toBe(false);
     });
   });
 

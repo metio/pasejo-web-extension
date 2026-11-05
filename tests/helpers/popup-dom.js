@@ -11,10 +11,6 @@ export function buildPopupDom(document) {
       <span class="title">pasejo</span>
       <span id="domain" class="domain"></span>
     </header>
-    <section id="permission-banner" class="permission-banner" hidden>
-      <span data-i18n="permissionBannerText">pasejo needs permission to access pages before it can fill credentials.</span>
-      <button id="grant-permissions" type="button" data-i18n="grantAccessButton">Grant access</button>
-    </section>
     <section class="controls">
       <label for="store" data-i18n="storeLabel">Store</label>
       <select id="store" aria-label="Store" data-i18n-aria-label="storeLabel"></select>

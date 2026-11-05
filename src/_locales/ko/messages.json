@@ -11,14 +11,6 @@
     "message": "pasejo 팝업 열기",
     "description": "Description of the keyboard command that opens the popup."
   },
-  "permissionBannerText": {
-    "message": "pasejo가 자격 증명을 채우려면 먼저 페이지에 접근할 권한이 필요합니다.",
-    "description": "Firefox-only banner explaining why host permission is required."
-  },
-  "grantAccessButton": {
-    "message": "접근 권한 부여",
-    "description": "Button that requests the missing host permission."
-  },
   "storeLabel": {
     "message": "저장소",
     "description": "Label and accessible name for the store-selector dropdown."
@@ -176,15 +168,6 @@
     "message": "(도메인 없음)",
     "description": "Header placeholder when the active tab has no hostname."
   },
-  "statusPageAccessGranted": {
-    "message": "페이지 접근 권한이 부여되었습니다. 채우기 전에 이미 열려 있는 탭을 새로 고침하세요.",
-    "description": "Shown after the user grants host permission."
-  },
-  "statusPageAccessRequestFailed": {
-    "message": "페이지 접근을 요청할 수 없습니다: $ERROR$",
-    "description": "Shown when requesting host permission fails.",
-    "placeholders": { "error": { "content": "$1" } }
-  },
   "statusFilledOtpOnly": {
     "message": "$NAME$의 일회용 코드를 채웠습니다.",
     "description": "Shown after filling only a one-time code (standalone 2FA step).",
@@ -213,6 +196,10 @@
   "statusNoFillablePassword": {
     "message": "페이지의 어떤 프레임에도 채울 수 있는 비밀번호 입력란이 없습니다.",
     "description": "Shown when no frame had a fillable password input."
+  },
+  "statusNoPageAccess": {
+    "message": "pasejo가 이 페이지에 입력할 수 없습니다. 브라우저는 자체 설정 페이지나 부가 기능 스토어 등 일부 페이지에서 확장 프로그램을 차단합니다.",
+    "description": "Shown when the browser does not let the extension run on the active page."
   },
   "errorUnknownStore": {
     "message": "선택한 저장소가 pasejo 구성에 존재하지 않습니다.",

@@ -7,7 +7,7 @@
 (function installPasejoProtocol(scope) {
   // Cross-browser binding for the WebExtensions API. Firefox exposes
   // `browser`; Chromium-family browsers only expose `chrome`. The shapes
-  // we use (runtime ports, tabs.query, tabs.sendMessage, i18n.getMessage)
+  // we use (runtime ports, tabs.query, scripting, i18n.getMessage)
   // are identical across both, so we pick whichever global is defined.
   const api = scope.browser ?? scope.chrome;
 

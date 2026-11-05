@@ -11,14 +11,6 @@
     "message": "pasejo のポップアップを開く",
     "description": "Description of the keyboard command that opens the popup."
   },
-  "permissionBannerText": {
-    "message": "pasejo が認証情報を入力するには、ページへのアクセス許可が必要です。",
-    "description": "Firefox-only banner explaining why host permission is required."
-  },
-  "grantAccessButton": {
-    "message": "アクセスを許可",
-    "description": "Button that requests the missing host permission."
-  },
   "storeLabel": {
     "message": "ストア",
     "description": "Label and accessible name for the store-selector dropdown."
@@ -176,15 +168,6 @@
     "message": "(ドメインなし)",
     "description": "Header placeholder when the active tab has no hostname."
   },
-  "statusPageAccessGranted": {
-    "message": "ページへのアクセスが許可されました。入力する前に、既に開いているタブを再読み込みしてください。",
-    "description": "Shown after the user grants host permission."
-  },
-  "statusPageAccessRequestFailed": {
-    "message": "ページへのアクセスを要求できませんでした: $ERROR$",
-    "description": "Shown when requesting host permission fails.",
-    "placeholders": { "error": { "content": "$1" } }
-  },
   "statusFilledOtpOnly": {
     "message": "$NAME$ のワンタイムコードを入力しました。",
     "description": "Shown after filling only a one-time code (standalone 2FA step).",
@@ -213,6 +196,10 @@
   "statusNoFillablePassword": {
     "message": "ページのどのフレームにも入力可能なパスワード入力欄がありませんでした。",
     "description": "Shown when no frame had a fillable password input."
+  },
+  "statusNoPageAccess": {
+    "message": "pasejo はこのページに入力できません。ブラウザーは自身の設定画面やアドオンストアなど、一部のページで拡張機能の動作を禁止しています。",
+    "description": "Shown when the browser does not let the extension run on the active page."
   },
   "errorUnknownStore": {
     "message": "選択したストアは pasejo の設定に存在しません。",

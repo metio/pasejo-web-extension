@@ -11,14 +11,6 @@
     "message": "Abrir la ventana emergente de pasejo",
     "description": "Description of the keyboard command that opens the popup."
   },
-  "permissionBannerText": {
-    "message": "pasejo necesita permiso para acceder a las páginas antes de poder rellenar credenciales.",
-    "description": "Firefox-only banner explaining why host permission is required."
-  },
-  "grantAccessButton": {
-    "message": "Conceder acceso",
-    "description": "Button that requests the missing host permission."
-  },
   "storeLabel": {
     "message": "Almacén",
     "description": "Label and accessible name for the store-selector dropdown."
@@ -176,15 +168,6 @@
     "message": "(sin dominio)",
     "description": "Header placeholder when the active tab has no hostname."
   },
-  "statusPageAccessGranted": {
-    "message": "Acceso a la página concedido. Vuelva a cargar las pestañas ya abiertas antes de rellenar.",
-    "description": "Shown after the user grants host permission."
-  },
-  "statusPageAccessRequestFailed": {
-    "message": "No se pudo solicitar el acceso a la página: $ERROR$",
-    "description": "Shown when requesting host permission fails.",
-    "placeholders": { "error": { "content": "$1" } }
-  },
   "statusFilledOtpOnly": {
     "message": "Se rellenó el código de un solo uso para $NAME$.",
     "description": "Shown after filling only a one-time code (standalone 2FA step).",
@@ -213,6 +196,10 @@
   "statusNoFillablePassword": {
     "message": "Ningún marco de la página tenía un campo de contraseña rellenable.",
     "description": "Shown when no frame had a fillable password input."
+  },
+  "statusNoPageAccess": {
+    "message": "pasejo no puede rellenar esta página. Los navegadores impiden a las extensiones acceder a algunas páginas, como su propia configuración y sus tiendas de complementos.",
+    "description": "Shown when the browser does not let the extension run on the active page."
   },
   "errorUnknownStore": {
     "message": "El almacén seleccionado no existe en su configuración de pasejo.",

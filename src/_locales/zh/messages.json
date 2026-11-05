@@ -11,14 +11,6 @@
     "message": "打开 pasejo 弹出窗口",
     "description": "Description of the keyboard command that opens the popup."
   },
-  "permissionBannerText": {
-    "message": "pasejo 需要访问页面的权限才能填充凭据。",
-    "description": "Firefox-only banner explaining why host permission is required."
-  },
-  "grantAccessButton": {
-    "message": "授予访问权限",
-    "description": "Button that requests the missing host permission."
-  },
   "storeLabel": {
     "message": "存储",
     "description": "Label and accessible name for the store-selector dropdown."
@@ -176,15 +168,6 @@
     "message": "（无域名）",
     "description": "Header placeholder when the active tab has no hostname."
   },
-  "statusPageAccessGranted": {
-    "message": "已授予页面访问权限。填充前请重新加载已打开的标签页。",
-    "description": "Shown after the user grants host permission."
-  },
-  "statusPageAccessRequestFailed": {
-    "message": "无法请求页面访问权限：$ERROR$",
-    "description": "Shown when requesting host permission fails.",
-    "placeholders": { "error": { "content": "$1" } }
-  },
   "statusFilledOtpOnly": {
     "message": "已为 $NAME$ 填充一次性密码。",
     "description": "Shown after filling only a one-time code (standalone 2FA step).",
@@ -213,6 +196,10 @@
   "statusNoFillablePassword": {
     "message": "页面上没有任何框架包含可填充的密码输入框。",
     "description": "Shown when no frame had a fillable password input."
+  },
+  "statusNoPageAccess": {
+    "message": "pasejo 无法填写此页面。浏览器禁止扩展在部分页面上运行，例如浏览器自身的设置页面和扩展商店。",
+    "description": "Shown when the browser does not let the extension run on the active page."
   },
   "errorUnknownStore": {
     "message": "所选存储在您的 pasejo 配置中不存在。",

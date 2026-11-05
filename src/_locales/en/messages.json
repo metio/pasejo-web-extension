@@ -11,14 +11,6 @@
     "message": "Open the pasejo popup",
     "description": "Description of the keyboard command that opens the popup."
   },
-  "permissionBannerText": {
-    "message": "pasejo needs permission to access pages before it can fill credentials.",
-    "description": "Firefox-only banner explaining why host permission is required."
-  },
-  "grantAccessButton": {
-    "message": "Grant access",
-    "description": "Button that requests the missing host permission."
-  },
   "storeLabel": {
     "message": "Store",
     "description": "Label and accessible name for the store-selector dropdown."
@@ -176,15 +168,6 @@
     "message": "(no domain)",
     "description": "Header placeholder when the active tab has no hostname."
   },
-  "statusPageAccessGranted": {
-    "message": "Page access granted. Reload already-open tabs before filling.",
-    "description": "Shown after the user grants host permission."
-  },
-  "statusPageAccessRequestFailed": {
-    "message": "Could not request page access: $ERROR$",
-    "description": "Shown when requesting host permission fails.",
-    "placeholders": { "error": { "content": "$1" } }
-  },
   "statusFilledOtpOnly": {
     "message": "Filled the one-time code for $NAME$.",
     "description": "Shown after filling only a one-time code (standalone 2FA step).",
@@ -213,6 +196,10 @@
   "statusNoFillablePassword": {
     "message": "No frame on the page had a fillable password input.",
     "description": "Shown when no frame had a fillable password input."
+  },
+  "statusNoPageAccess": {
+    "message": "pasejo cannot fill this page. Browsers keep extensions off some pages, such as their own settings and add-on stores.",
+    "description": "Shown when the browser does not let the extension run on the active page."
   },
   "errorUnknownStore": {
     "message": "The selected store does not exist in your pasejo configuration.",

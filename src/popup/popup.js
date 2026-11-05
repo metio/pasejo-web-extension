@@ -16,8 +16,6 @@ const elements = {
   refresh: document.getElementById("refresh"),
   status: document.getElementById("status"),
   results: document.getElementById("results"),
-  permissionBanner: document.getElementById("permission-banner"),
-  grantPermissions: document.getElementById("grant-permissions"),
 };
 
 // Sentinel value the Store dropdown uses for "fan out the query across
@@ -787,8 +785,7 @@ function renderMatch(match) {
     // the activation would fire `fillIntoActiveTab` twice (once via
     // the button's click handler, once via this keydown handler) —
     // the popup's `state.filling` guard catches the second call but
-    // each invocation still costs a `loadActiveTab` and a wasted
-    // `tabs.sendMessage` fan-out.
+    // each invocation still costs a `loadActiveTab` round-trip.
     if (event.target !== item) {
       return;
     }
@@ -918,52 +915,232 @@ async function fillIntoActiveTab(match) {
     setTimeout(() => window.close(), partial ? 1500 : 600);
     return;
   }
-  setStatus(t("statusNoFillablePassword"), "error");
+  setStatus(
+    t(reply.noAccess ? "statusNoPageAccess" : "statusNoFillablePassword"),
+    "error",
+  );
   // Failure path: re-enable so the user can try a different match.
   state.filling = false;
 }
 
-// SSO and embedded-checkout flows put the login form in a same-tab
-// iframe. The fill walk goes:
+// Fills `payload` into the active tab. The fill script is injected only
+// now, into every frame the browser lets the extension reach — opening
+// the popup granted `activeTab` for the tab's page, and the manifest
+// asks for no standing host access. The walk goes:
 //
-// 1. Probe every frame in parallel — read-only `document.hasFocus()`
-//    via the `probe-focus` message; no credential is sent, no DOM is
-//    mutated. The first frame that reports focus is the user's
-//    intended target.
-// 2. Build the fill order: focused frame first (when one was found),
-//    followed by every frame in tree order with the focused frame
-//    removed so it isn't tried twice.
-// 3. Walk the order sequentially and stop at the first `ok:true`
-//    reply. Sequential rather than parallel because a parallel
-//    `Promise.all` here would dispatch the actual fill payload to
-//    every frame and fill every form that has a password input,
-//    including unrelated change-password iframes and (worse) any
-//    malicious iframe injected into the page.
+// 1. Inject `content/fill.js` into all frames. Each injected frame
+//    opens a `pasejo-frame` port back to this popup and reports
+//    read-only focus facts in a `ready` message; no credential is sent,
+//    no DOM is mutated.
+// 2. Order the frames: the one holding focus (or, failing that, the one
+//    whose focused element is a fillable input) first, the rest in the
+//    order the browser listed them.
+// 3. Send the fill to one frame at a time and stop at the first
+//    `ok:true` reply. Sequential rather than parallel because a
+//    parallel fan-out would fill every form that has a password input,
+//    including unrelated change-password iframes and any malicious
+//    iframe injected into the page.
 //
-// The focus probe closes the iframe-targeting gap from earlier review
-// rounds at the cost of one extra round-trip per fill, which is
-// negligible against the human reaction time it takes to click the
-// row.
+// Resolves `{ok:false, noAccess:true}` when the browser refused the
+// injection outright (a browser-internal page, an add-on store).
 async function fillAcrossFrames(tabId, payload) {
-  const frames = await listFrames(tabId);
-  const focused = await findFocusedFrame(tabId, frames);
-  const order =
-    focused === null
-      ? frames
-      : [focused, ...frames.filter((f) => f !== focused)];
-  for (const frameId of order) {
-    try {
-      const reply = await api.tabs.sendMessage(tabId, payload, { frameId });
-      if (reply?.ok) {
+  const collector = createFrameCollector(tabId);
+  frameCollector = collector;
+  try {
+    const injected = await injectFillScript(tabId);
+    if (injected === null) {
+      return { ok: false, noAccess: true };
+    }
+    const frames = await collector.waitFor(injected, FRAME_HANDSHAKE_TIMEOUT_MS);
+    for (const frame of orderFramesForFill(frames)) {
+      const reply = await requestFill(frame, payload);
+      if (reply.ok) {
         return reply;
       }
-    } catch (_) {
-      // Frame may have unloaded between getAllFrames and sendMessage,
-      // or it may not have our content script (e.g. about:blank).
-      // Skip and try the next.
     }
+    return { ok: false };
+  } finally {
+    if (frameCollector === collector) {
+      frameCollector = null;
+    }
+    collector.close();
   }
-  return { ok: false };
+}
+
+// Runs the fill script in every frame of `tabId` the extension may
+// reach. Returns the ids of the frames where it ran and opened its
+// port, or null when the browser refused the injection as a whole.
+// Frames the browser skipped or reported an `error` for are left out.
+async function injectFillScript(tabId) {
+  let results;
+  try {
+    results = await api.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: [FILL_SCRIPT_PATH],
+    });
+  } catch (_) {
+    return null;
+  }
+  if (!Array.isArray(results)) {
+    return [];
+  }
+  return results
+    .filter((r) => r?.result === true && Number.isInteger(r.frameId))
+    .map((r) => r.frameId);
+}
+
+// Collects the `pasejo-frame` ports the fill script opens while one
+// fill attempt is in flight. A port is accepted only when the browser
+// says it came from `tabId`; everything the popup later decides about a
+// frame comes from the port's browser-stamped `sender`, never from what
+// the frame's page could put in a message.
+function createFrameCollector(tabId) {
+  const frames = new Map();
+  const waiters = new Set();
+  const notify = () => {
+    for (const waiter of waiters) {
+      waiter();
+    }
+  };
+  return {
+    accept(port) {
+      const sender = port.sender;
+      if (
+        sender?.tab?.id !== tabId ||
+        !Number.isInteger(sender.frameId) ||
+        frames.has(sender.frameId)
+      ) {
+        safeDisconnectPort(port);
+        return;
+      }
+      const frame = {
+        port,
+        frameId: sender.frameId,
+        ready: false,
+        focused: false,
+        editableFocused: false,
+        disconnected: false,
+      };
+      frames.set(frame.frameId, frame);
+      port.onMessage.addListener((message) => {
+        if (message?.type !== "ready" || frame.ready) {
+          return;
+        }
+        frame.ready = true;
+        frame.focused = message.focused === true;
+        frame.editableFocused = message.editableFocused === true;
+        notify();
+      });
+      port.onDisconnect.addListener(() => {
+        frame.disconnected = true;
+        notify();
+      });
+    },
+    // Resolves with the ready, still-connected frames among `frameIds`
+    // (in that order) once each of them has either reported ready or
+    // gone away, or after `timeoutMs`, whichever comes first.
+    waitFor(frameIds, timeoutMs) {
+      const settledFrames = () =>
+        frameIds
+          .map((id) => frames.get(id))
+          .filter((frame) => frame?.ready && !frame.disconnected);
+      const allSettled = () =>
+        frameIds.every((id) => {
+          const frame = frames.get(id);
+          return frame !== undefined && (frame.ready || frame.disconnected);
+        });
+      return new Promise((resolve) => {
+        const finish = () => {
+          clearTimeout(timer);
+          waiters.delete(check);
+          resolve(settledFrames());
+        };
+        const check = () => {
+          if (allSettled()) {
+            finish();
+          }
+        };
+        const timer = setTimeout(finish, timeoutMs);
+        waiters.add(check);
+        check();
+      });
+    },
+    close() {
+      for (const frame of frames.values()) {
+        safeDisconnectPort(frame.port);
+      }
+      frames.clear();
+      waiters.clear();
+    },
+  };
+}
+
+// The fill attempt collecting frame ports right now, or null. Ports
+// that connect while no attempt is collecting are refused.
+let frameCollector = null;
+
+api.runtime.onConnect.addListener((port) => {
+  if (port.name !== FRAME_PORT_NAME) {
+    return;
+  }
+  if (frameCollector === null) {
+    safeDisconnectPort(port);
+    return;
+  }
+  frameCollector.accept(port);
+});
+
+// The frame holding focus first, else the frame whose focused element
+// is a fillable input, then the remaining frames in their given order.
+function orderFramesForFill(frames) {
+  const preferred =
+    frames.find((frame) => frame.focused) ??
+    frames.find((frame) => frame.editableFocused);
+  if (preferred === undefined) {
+    return frames;
+  }
+  return [preferred, ...frames.filter((frame) => frame !== preferred)];
+}
+
+// Sends one fill to one frame and resolves with its `fill-result`, or
+// with `{ok:false}` when the frame goes away or stays silent.
+function requestFill(frame, payload) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (reply) => {
+      if (done) {
+        return;
+      }
+      done = true;
+      clearTimeout(timer);
+      resolve(reply);
+    };
+    const timer = setTimeout(
+      () => finish({ ok: false }),
+      FRAME_FILL_TIMEOUT_MS,
+    );
+    frame.port.onMessage.addListener((message) => {
+      if (message?.type === "fill-result") {
+        finish({ ...message, ok: message.ok === true });
+      }
+    });
+    frame.port.onDisconnect.addListener(() => finish({ ok: false }));
+    try {
+      frame.port.postMessage(payload);
+    } catch (_) {
+      finish({ ok: false });
+    }
+  });
+}
+
+// Best-effort `port.disconnect()`: a port the other side already closed
+// can throw.
+function safeDisconnectPort(port) {
+  try {
+    port.disconnect();
+  } catch (_) {
+    // Already disconnected.
+  }
 }
 
 // Interval for the keepalive ping the popup sends on the stream port
@@ -978,99 +1155,18 @@ async function fillAcrossFrames(tabId, payload) {
 // protocol handling on the other side.
 const STREAM_KEEPALIVE_INTERVAL_MS = 20_000;
 
-// How far back an editable-focus timestamp still counts as "the user
-// was just typing there". Long enough to survive the popup-open
-// pause and a glance at the results list; short enough that a field
-// the user abandoned minutes ago doesn't outvote the default
-// top-first fill order.
-const EDITABLE_FOCUS_RECENCY_MS = 60_000;
+// The fill script `scripting.executeScript` injects, relative to the
+// extension root, and the name of the port it opens back to the popup.
+const FILL_SCRIPT_PATH = "content/fill.js";
+const FRAME_PORT_NAME = "pasejo-frame";
 
-// Picks the frame the user most plausibly intends to fill, or null
-// when nothing stands out (callers then walk frames top-first). One
-// parallel probe wave to every frame; each reply carries two signals:
-//
-// * `focused` — `document.hasFocus()`. Nearly always false in
-//   production because the probe runs while the extension popup
-//   itself holds the window focus; honoured anyway since it's free
-//   and authoritative when a browser does report it.
-// * `lastEditableFocusAt` — when a fill-relevant input in that frame
-//   last received focus. This is the real signal: "the frame the
-//   user was typing in BEFORE opening the popup". The most recent
-//   one within `EDITABLE_FOCUS_RECENCY_MS` wins.
-async function findFocusedFrame(tabId, frames) {
-  if (frames.length === 0) {
-    return null;
-  }
-  const probes = await Promise.all(
-    frames.map(async (frameId) => {
-      try {
-        const reply = await api.tabs.sendMessage(
-          tabId,
-          { type: "probe-focus" },
-          { frameId },
-        );
-        if (!reply?.ok) {
-          return null;
-        }
-        return {
-          frameId,
-          focused: reply.focused === true,
-          lastEditableFocusAt:
-            typeof reply.lastEditableFocusAt === "number"
-              ? reply.lastEditableFocusAt
-              : 0,
-        };
-      } catch (_) {
-        return null;
-      }
-    }),
-  );
-  const replies = probes.filter((p) => p !== null);
-  const focused = replies.find((r) => r.focused);
-  if (focused) {
-    return focused.frameId;
-  }
-  const now = Date.now();
-  let best = null;
-  for (const reply of replies) {
-    if (reply.lastEditableFocusAt <= 0) {
-      continue;
-    }
-    if (now - reply.lastEditableFocusAt > EDITABLE_FOCUS_RECENCY_MS) {
-      continue;
-    }
-    if (best === null || reply.lastEditableFocusAt > best.lastEditableFocusAt) {
-      best = reply;
-    }
-  }
-  return best === null ? null : best.frameId;
-}
+// How long the injected frames get to open their port and report ready.
+// Injection resolves after the script ran, so a frame that has not
+// reported by then is gone or wedged.
+const FRAME_HANDSHAKE_TIMEOUT_MS = 2_000;
 
-async function listFrames(tabId) {
-  if (!api.webNavigation?.getAllFrames) {
-    return [0];
-  }
-  try {
-    const frames = await api.webNavigation.getAllFrames({ tabId });
-    if (Array.isArray(frames) && frames.length > 0) {
-      // Drop frames that can't have our content script registered:
-      //  * `errorOccurred: true` — the frame's navigation failed and no
-      //    document is loaded, so there is no message receiver.
-      //  * `url: "about:blank"` — either mid-navigation (no
-      //    `document_idle` yet) or an intentional empty iframe; our
-      //    manifest's `<all_urls>` does not match `about:*` and we
-      //    don't set `match_about_blank`, so a content script was
-      //    never injected there. Either case would cost the caller
-      //    one wasted `tabs.sendMessage` round-trip per frame.
-      return frames
-        .filter((f) => !f.errorOccurred && f.url !== "about:blank")
-        .map((f) => f.frameId);
-    }
-  } catch (_) {
-    // Permission missing or tab closed — fall through to top-frame only.
-  }
-  return [0];
-}
+// How long one frame gets to answer a fill before the walk moves on.
+const FRAME_FILL_TIMEOUT_MS = 5_000;
 
 // Walks the full "pull a fresh store roster from the host, pick the
 // preferred entry for the current hostname, redraw the dropdown, and
@@ -1111,40 +1207,6 @@ async function refreshStoresAndQuery() {
   await runQuery();
 }
 
-// The origins the content script needs before it can fill anything.
-// Firefox MV3 treats content-script match patterns as OPTIONAL host
-// permissions that default to OFF — without the grant, fill.js never
-// injects and every fill fails with a misleading "no fillable input"
-// error. Chromium grants statically-declared content scripts at
-// install, so `permissions.contains` reports true there and the
-// banner stays hidden.
-const PAGE_ACCESS_ORIGINS = Object.freeze({ origins: ["<all_urls>"] });
-
-// Reports whether the content script's origins are granted. Errs on
-// the side of "granted": a missing `permissions` API or a throwing
-// `contains` must not block the popup's main flow — the worst case of
-// a wrong `true` is the pre-banner status quo (a generic fill error).
-async function checkPageAccess() {
-  if (!api.permissions?.contains) {
-    return true;
-  }
-  try {
-    return await api.permissions.contains(PAGE_ACCESS_ORIGINS);
-  } catch (_) {
-    return true;
-  }
-}
-
-// Shows the grant-access banner when the content script's origins are
-// not granted yet. Separate from `main`'s query pipeline so a slow
-// host cannot delay the banner and vice versa.
-async function revealPermissionBannerIfNeeded() {
-  const granted = await checkPageAccess();
-  if (!granted) {
-    elements.permissionBanner.hidden = false;
-  }
-}
-
 async function main() {
   const tab = await loadActiveTab();
   if (!tab) {
@@ -1153,38 +1215,14 @@ async function main() {
   }
   state.domain = tab.hostname;
   elements.domain.textContent = tab.hostname ?? t("noDomainPlaceholder");
-  // Legacy-storage cleanup and the permission check run in parallel
-  // with the main refresh pipeline so the popup-open latency stays
-  // bounded by the slowest of the three — `refreshStoresAndQuery`
-  // already involves a native-messaging round-trip, against which
-  // the other two are in the noise. Both helpers swallow their own
-  // errors, so chaining them through `Promise.all` can't fail the
-  // outer await.
-  await Promise.all([
-    reconcileLegacyStorage(),
-    revealPermissionBannerIfNeeded(),
-    refreshStoresAndQuery(),
-  ]);
+  // Legacy-storage cleanup runs in parallel with the main refresh
+  // pipeline so the popup-open latency stays bounded by the slower of
+  // the two — `refreshStoresAndQuery` involves a native-messaging
+  // round-trip, against which the cleanup is in the noise. The cleanup
+  // swallows its own errors, so `Promise.all` can't fail the outer
+  // await.
+  await Promise.all([reconcileLegacyStorage(), refreshStoresAndQuery()]);
 }
-
-// `permissions.request` must run inside a user gesture; the click
-// handler provides one. Content scripts only inject on page load, so
-// tabs that were already open when the grant happened need a reload
-// before a fill can reach them — the success status says so.
-elements.grantPermissions.addEventListener("click", async () => {
-  if (!api.permissions?.request) {
-    return;
-  }
-  try {
-    const granted = await api.permissions.request(PAGE_ACCESS_ORIGINS);
-    if (granted) {
-      elements.permissionBanner.hidden = true;
-      setStatus(t("statusPageAccessGranted"));
-    }
-  } catch (err) {
-    setStatus(t("statusPageAccessRequestFailed", err.message), "error");
-  }
-});
 
 elements.store.addEventListener("change", () => {
   state.store = readSelectedStore();

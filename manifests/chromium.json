@@ -34,19 +34,10 @@
       "description": "__MSG_commandOpenPopup__"
     }
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content/fill.js"],
-      "run_at": "document_idle",
-      "all_frames": true
-    }
-  ],
   "permissions": [
     "activeTab",
     "nativeMessaging",
-    "storage",
-    "webNavigation"
-  ],
-  "host_permissions": ["<all_urls>"]
+    "scripting",
+    "storage"
+  ]
 }

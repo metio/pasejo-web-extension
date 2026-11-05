@@ -1,11 +1,20 @@
 // SPDX-FileCopyrightText: The pasejo Authors
 // SPDX-License-Identifier: 0BSD
 
+// The popup injects this file with `scripting.executeScript` when the user
+// picks a match, into every frame of the active tab it may reach. Each run
+// opens a port back to the popup; the browser stamps that port with the
+// frame's id and origin, which is what the popup decides on before it sends
+// a credential. The value of the IIFE is the injection result the popup
+// reads: `true` once the port is open.
 (function setupPasejoFiller() {
   const api = globalThis.browser ?? globalThis.chrome;
-  if (!api?.runtime?.onMessage) {
-    return;
+  if (!api?.runtime?.connect) {
+    return false;
   }
+
+  // Must match `FRAME_PORT_NAME` in popup.js.
+  const FRAME_PORT_NAME = "pasejo-frame";
 
   // Pulse outline colour — the user's OS / browser system accent.
   // Targeting Firefox 103+ / Chromium 118+ for the `AccentColor`
@@ -14,49 +23,6 @@
   // theme the user has already chosen rather than imposing a brand
   // colour on every page.
   const PULSE_OUTLINE_COLOR = "AccentColor";
-
-  // Timestamp of the last `focusin` that landed on a fill-relevant
-  // input in this frame. This is the signal the popup's frame-picking
-  // actually needs: "which frame was the user typing in BEFORE they
-  // opened the popup". `document.hasFocus()` alone cannot answer that
-  // — the probe only ever runs while the extension popup is open, and
-  // the popup holds the window focus at that moment, so every frame
-  // reports false.
-  let lastEditableFocusAt = 0;
-
-  // The pickers below are intentionally conservative: nothing fires
-  // until the popup explicitly sends `{type: "fill"}`. The page never
-  // sees credentials on load and never sees them in response to focus or
-  // navigation events. `probe-focus` is a read-only query the popup
-  // sends to every frame before a fill so it can prefer the
-  // user-intended target — no DOM mutation, no credential exposure.
-  api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!message) {
-      return false;
-    }
-    if (message.type === "probe-focus") {
-      sendResponse({
-        ok: true,
-        focused: document.hasFocus(),
-        lastEditableFocusAt,
-      });
-      return false;
-    }
-    if (message.type !== "fill") {
-      return false;
-    }
-    try {
-      const result = fill(
-        message.username ?? "",
-        message.password ?? "",
-        message.otp ?? "",
-      );
-      sendResponse({ ok: true, ...result });
-    } catch (err) {
-      sendResponse({ ok: false, error: err?.message ?? String(err) });
-    }
-    return false;
-  });
 
   function fill(username, password, otp) {
     // Single deep traversal: collect every `<input>` reachable from
@@ -386,32 +352,20 @@
   // tel / number input (never a password, which would mask the code).
   const OTP_TYPES = new Set(["text", "tel", "number", ""]);
 
-  // Input types whose focus is worth remembering for the popup's
-  // frame-picking: everything a fill could target — username-capable
-  // types plus password fields.
+  // Input types whose focus counts for the popup's frame-picking:
+  // everything a fill could target — username-capable types plus
+  // password fields.
   const FILLABLE_FOCUS_TYPES = new Set([...USERNAME_TYPES, "password"]);
 
-  // Records when a fill-relevant input last held focus in this frame.
-  // `focusin` is composed, so focus changes inside open shadow roots
-  // bubble out — but the event is retargeted to the shadow HOST at
-  // the document level, so `composedPath()[0]` is needed to see the
-  // real inner input. Capture phase so a page calling
-  // `stopPropagation` in a bubble-phase listener can't blind us.
-  document.addEventListener(
-    "focusin",
-    (event) => {
-      // `composedPath()` is never empty inside a dispatched listener,
-      // so index 0 is always the (possibly shadow-inner) real target.
-      const [target] = event.composedPath();
-      if (
-        target instanceof HTMLInputElement &&
-        FILLABLE_FOCUS_TYPES.has(target.type.toLowerCase())
-      ) {
-        lastEditableFocusAt = Date.now();
-      }
-    },
-    true,
-  );
+  // Whether the element focused in this document (seen through open
+  // shadow roots) is an input a fill could target.
+  function hasEditableFocus() {
+    const active = activeElementDeep();
+    return (
+      active instanceof HTMLInputElement &&
+      FILLABLE_FOCUS_TYPES.has(active.type.toLowerCase())
+    );
+  }
 
   function looksLikeUsername(el) {
     const type = el.type.toLowerCase();
@@ -532,4 +486,39 @@
       el.style.outlineOffset = previousOffset;
     }, 600);
   }
+
+  // The port is the only channel a credential arrives on: nothing fires
+  // until the popup sends `{type: "fill"}` over it, and a page script
+  // cannot reach it from the page's own JavaScript world. It opens last
+  // because the ready message reads the `const`s declared above.
+  const port = api.runtime.connect({ name: FRAME_PORT_NAME });
+  port.onMessage.addListener((message) => {
+    if (message?.type !== "fill") {
+      return;
+    }
+    let reply;
+    try {
+      const result = fill(
+        message.username ?? "",
+        message.password ?? "",
+        message.otp ?? "",
+      );
+      reply = { ok: true, ...result };
+    } catch (err) {
+      reply = { ok: false, error: err?.message ?? String(err) };
+    }
+    port.postMessage({ type: "fill-result", ...reply });
+  });
+  // Read-only facts the popup uses to try the frame the user was working
+  // in first. Opening the popup takes the window focus, so
+  // `document.hasFocus()` is nearly always false by now; the element that
+  // held focus in this document stays `activeElement`, though, which is
+  // what `editableFocused` reports.
+  port.postMessage({
+    type: "ready",
+    focused: document.hasFocus(),
+    editableFocused: hasEditableFocus(),
+  });
+
+  return true;
 })();

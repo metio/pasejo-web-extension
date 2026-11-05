@@ -24,32 +24,6 @@ SPDX-License-Identifier: 0BSD
       <span id="domain" class="domain"></span>
     </header>
 
-    <!--
-      Firefox MV3 treats the content script's match patterns as
-      optional host permissions that default to OFF — without the
-      grant, fill.js never injects and every fill fails with a
-      misleading "no fillable input" error. The banner surfaces the
-      real cause and offers the one-click fix; `permissions.request`
-      must run inside a user gesture, which the button click
-      provides. Chromium grants statically-declared content scripts
-      at install, so the banner stays hidden there.
-    -->
-    <section id="permission-banner" class="permission-banner" hidden>
-      <!--
-        Text content is localized at load by `localizeStaticDom` reading
-        the `data-i18n*` attributes — WebExtensions only substitute
-        `__MSG_*__` in the manifest and CSS, never in HTML. The English
-        copy below is the fallback shown if that pass never runs.
-      -->
-      <span data-i18n="permissionBannerText">
-        pasejo needs permission to access pages before it can fill
-        credentials.
-      </span>
-      <button id="grant-permissions" type="button" data-i18n="grantAccessButton">
-        Grant access
-      </button>
-    </section>
-
     <section class="controls">
       <label for="store" data-i18n="storeLabel">Store</label>
       <select id="store" aria-label="Store" data-i18n-aria-label="storeLabel"></select>

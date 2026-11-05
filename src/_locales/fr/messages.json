@@ -11,14 +11,6 @@
     "message": "Ouvrir la fenêtre contextuelle pasejo",
     "description": "Description of the keyboard command that opens the popup."
   },
-  "permissionBannerText": {
-    "message": "pasejo a besoin de l'autorisation d'accéder aux pages pour pouvoir remplir les identifiants.",
-    "description": "Firefox-only banner explaining why host permission is required."
-  },
-  "grantAccessButton": {
-    "message": "Accorder l'accès",
-    "description": "Button that requests the missing host permission."
-  },
   "storeLabel": {
     "message": "Coffre",
     "description": "Label and accessible name for the store-selector dropdown."
@@ -176,15 +168,6 @@
     "message": "(aucun domaine)",
     "description": "Header placeholder when the active tab has no hostname."
   },
-  "statusPageAccessGranted": {
-    "message": "Accès à la page accordé. Rechargez les onglets déjà ouverts avant de remplir.",
-    "description": "Shown after the user grants host permission."
-  },
-  "statusPageAccessRequestFailed": {
-    "message": "Impossible de demander l'accès à la page : $ERROR$",
-    "description": "Shown when requesting host permission fails.",
-    "placeholders": { "error": { "content": "$1" } }
-  },
   "statusFilledOtpOnly": {
     "message": "Code à usage unique rempli pour $NAME$.",
     "description": "Shown after filling only a one-time code (standalone 2FA step).",
@@ -213,6 +196,10 @@
   "statusNoFillablePassword": {
     "message": "Aucun cadre de la page n'avait de champ de mot de passe à remplir.",
     "description": "Shown when no frame had a fillable password input."
+  },
+  "statusNoPageAccess": {
+    "message": "pasejo ne peut pas remplir cette page. Les navigateurs interdisent aux extensions certaines pages, comme leurs propres paramètres et leurs boutiques de modules.",
+    "description": "Shown when the browser does not let the extension run on the active page."
   },
   "errorUnknownStore": {
     "message": "Le coffre sélectionné n'existe pas dans votre configuration pasejo.",

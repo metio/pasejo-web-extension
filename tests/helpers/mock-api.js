@@ -93,12 +93,8 @@ export function makeApiMock() {
         remove: vi.fn(),
       },
     },
-    webNavigation: {
-      getAllFrames: vi.fn(),
-    },
-    permissions: {
-      contains: vi.fn().mockResolvedValue(true),
-      request: vi.fn().mockResolvedValue(true),
+    scripting: {
+      executeScript: vi.fn().mockResolvedValue([]),
     },
     i18n: {
       getMessage: vi.fn(getMessage),
@@ -108,6 +104,19 @@ export function makeApiMock() {
     __onMessageListeners: onMessageListeners,
     __onConnectListeners: onConnectListeners,
     __streamPairs: streamPairs,
+    // Content-script side of `runtime.connect`: opens a paired port whose
+    // extension-facing half carries `sender` (as the browser stamps it),
+    // fires every `onConnect` listener with that half, and returns the
+    // content-facing half.
+    __connectFromContent(name, sender) {
+      const pair = makePortPair(name);
+      pair.backgroundPort.sender = sender;
+      streamPairs.push(pair);
+      for (const listener of onConnectListeners) {
+        listener(pair.backgroundPort);
+      }
+      return pair.popupPort;
+    },
   };
 }
 

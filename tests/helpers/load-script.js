@@ -32,3 +32,13 @@ export function loadClassicScript(relPath, { expose = [] } = {}) {
   const fn = vm.compileFunction(source + trailer, [], { filename: absPath });
   return fn() ?? null;
 }
+
+// Runs one of the extension's classic scripts as a script and returns its
+// completion value — what `scripting.executeScript({files})` hands back as
+// the injection result. Top-level declarations land on the global, so use
+// this only for scripts that keep their state inside an IIFE.
+export function evaluateClassicScript(relPath) {
+  const absPath = path.resolve(projectRoot, relPath);
+  const source = fs.readFileSync(absPath, "utf8");
+  return vm.runInThisContext(source, { filename: absPath });
+}
