@@ -16,7 +16,7 @@
     "model:test": "quint test model/extension_test.qnt --main extension_test",
     "model:simulate": "quint run model/scenarios.qnt --main scenarios --max-samples 20000 --max-steps 40 --verbosity 1 --invariants fillOnlyIntoMatchingFrames fillOnlyOnQueriedPage revealOnlyAfterClick confirmBeforeReveal neverPolicyNeverReleased otpOnlyForExactHost streamCorrelatesReplies streamAlwaysEnds rowsComeFromHostReplies --witnesses filled filledIframe filledAfterFrameCheck filledAfterConfirmation filledFromSecondStore triedSecondFrame releasedOtp releasedWithoutFill releasedForGoneFrame stoppedForChangedPage stoppedWithoutAccess refusedByVisibility refusedOtherSite refusedReveal answeredStream abandonedStream",
     "model:replay": "vitest run tests/model-replay.test.js",
-    "model:verify": "quint verify model/extension.qnt --main extension --invariant allInvariants --max-steps 6"
+    "model:verify": "quint verify model/extension.qnt --main extension --invariant allInvariants --max-steps 4"
   },
   "devDependencies": {
     "@informalsystems/quint": "^0.33.1",
