@@ -260,6 +260,66 @@ merges the results.
 * **No save-new-credential flow.** Read-only for now — adding a new
   secret still goes through the CLI.
 
+## Verifying a release
+
+Every GitHub Release carries `SHA256SUMS`, the SHA-256 hashes of
+`pasejo-firefox.xpi` and `pasejo-chromium.zip`, and `SHA256SUMS.bundle`,
+a cosign keyless signature made by the release workflow for that tag.
+The archives are reproducible, so the same hashes come out of a build of
+the tagged source.
+
+Check the signature and the downloaded archives, with `<version>` the
+release without its leading `v`:
+
+```sh
+cosign verify-blob SHA256SUMS \
+  --bundle SHA256SUMS.bundle \
+  --certificate-identity "https://github.com/metio/pasejo-web-extension/.github/workflows/release.yml@refs/tags/v<version>" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum --ignore-missing -c SHA256SUMS
+```
+
+The first command proves the checksum file came from the release
+workflow running on that tag; the second proves the archives in the
+directory match it.
+
+Rebuild the release from source and compare:
+
+```sh
+git clone https://github.com/metio/pasejo-web-extension
+cd pasejo-web-extension
+git checkout v<version>
+./package.sh <version>
+diff dist/SHA256SUMS /path/to/downloaded/SHA256SUMS
+```
+
+`package.sh` needs only a POSIX shell, the usual file utilities and
+Info-ZIP `zip`, the program the release workflow uses on its Ubuntu
+runner. The archive bytes depend on the compressor, so a different zip
+implementation or version may produce different hashes from identical
+contents.
+
+Copies from the add-on stores do not match `SHA256SUMS` byte for byte,
+because the stores add their own signatures. Compare their contents
+with the rebuilt `dist/` directories instead. A Firefox Add-ons `.xpi`
+carries its signature under `META-INF/`:
+
+```sh
+mkdir amo && unzip -q /path/to/pasejo.xpi -d amo
+diff -r --exclude=META-INF amo dist/firefox
+```
+
+Firefox keeps an installed copy as `extensions/pasejo@metio.wtf.xpi` in
+the profile directory. A Chromium-family browser keeps an installed
+copy unpacked under its profile, in
+`Extensions/<extension id>/<version>_0/`. A copy from the Chrome Web
+Store carries an added `_metadata/` directory and an `update_url` key in
+`manifest.json`, so expect `manifest.json` to differ by that key:
+
+```sh
+diff -r --exclude=_metadata ~/.config/google-chrome/Default/Extensions/<extension id>/<version>_0 dist/chromium
+```
+
 ## Privacy
 
 The extension does not collect any data. See [PRIVACY.md](PRIVACY.md)
@@ -277,7 +337,15 @@ for the per-permission breakdown.
                     #   dist/chromium/            (load-unpacked dir)
                     #   dist/pasejo-firefox.xpi   (AMO submission archive)
                     #   dist/pasejo-chromium.zip  (Chrome Web Store submission)
+                    #   dist/SHA256SUMS           (hashes of both archives)
+./package.sh 1.2.0  # the same, with version 1.2.0 in both built manifests
 ```
+
+The archives are byte-reproducible: `package.sh` sorts their entries and
+gives every file mode `0644` and one fixed timestamp, `SOURCE_DATE_EPOCH`
+when set, else 1980-01-01. `tests/package.test.js` builds twice from
+copies with different file times, modes, umask and time zone and checks
+that the hashes agree.
 
 Lint the Firefox bundle before submission:
 
@@ -287,8 +355,10 @@ web-ext lint --source-dir=dist/firefox
 
 CI runs the same `package.sh` + `web-ext lint` on every PR and
 publishes the artifacts under the workflow run. Push a `vX.Y.Z` tag to
-trigger the release workflow, which attaches the same archives to a
-GitHub Release.
+trigger the release workflow, which runs `./package.sh X.Y.Z`, signs
+`SHA256SUMS` with cosign keyless, and attaches the archives,
+`SHA256SUMS` and `SHA256SUMS.bundle` to a GitHub Release (see
+*Verifying a release* above).
 
 ## Tests
 
@@ -490,7 +560,7 @@ src/                 Source files served verbatim from the extension
   _locales/          Per-language messages.json (en is default_locale)
 manifests/           Per-browser manifest.json files
 icons/               Toolbar icons; edit pasejo.svg, then run make-icons.sh
-package.sh           Copies src/ + the right manifest into dist/<browser>/
+package.sh           Builds dist/<browser>/, the reproducible archives and SHA256SUMS
 tests/               Vitest unit suite (happy-dom)
 e2e/                 Playwright end-to-end suite (real Chrome + real host)
 ```

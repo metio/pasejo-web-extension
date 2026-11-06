@@ -104,6 +104,13 @@ a known property of the design, not a vulnerability.
   reaches the popup, keeping paths off shared screens and out of
   support screenshots. This is defence in depth, not a guarantee —
   see the pasejo repository for details.
+* **Release archives can be checked against the source.** The release
+  workflow signs `SHA256SUMS` with cosign keyless, and `package.sh`
+  builds byte-identical archives from the tagged source with the same
+  zip program, so a release can be traced to its tag both by signature
+  and by rebuilding it. Store copies carry the stores' own signatures
+  and are compared by content. The README's *Verifying a release*
+  section has the commands.
 
 ## Accepted boundaries
 
