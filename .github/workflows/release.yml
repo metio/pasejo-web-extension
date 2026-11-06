@@ -1,66 +1,97 @@
 # SPDX-FileCopyrightText: The pasejo Authors
 # SPDX-License-Identifier: 0BSD
 
-# Triggered when a `vX.Y.Z` tag is pushed. Computes the version from
-# the tag, rewrites the manifest version fields, builds the distribution
-# archives, lints the Firefox bundle, and creates a GitHub Release with
-# the .xpi + .zip attached so the AMO / Chrome Web Store uploads have a
-# stable place to come from.
-#
-# Unlike pasejo's calendar-based release, the extension uses tag-driven
-# semver. Each tag represents a deliberate, store-submittable build.
+# A `vX.Y.Z` tag builds the archives with `./package.sh X.Y.Z`, signs their
+# SHA256SUMS with cosign keyless, and publishes all of it as a GitHub
+# Release. web-ext runs in its own job, so it cannot alter the uploaded
+# archives, and neither build job holds a write token or an OIDC token.
 
 name: Release
 on:
   push:
     tags:
       - 'v*'
-
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
-  release:
-    name: Build + release
+  build:
+    name: Build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Node
-        uses: actions/setup-node@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: lts/*
-
+          persist-credentials: false
       - id: version
         name: Derive version from tag
-        # Strip the leading `v` (`v0.1.0` -> `0.1.0`) because that's the
-        # format `manifest.json` requires: Chrome rejects a leading `v`.
-        run: |
-          v="${GITHUB_REF_NAME#v}"
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          for m in manifests/firefox.json manifests/chromium.json; do
-            jq --arg v "$v" '.version = $v' "$m" > "$m.tmp"
-            mv "$m.tmp" "$m"
-          done
-
+        # Chrome rejects a manifest version with a leading `v`.
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - name: Build extension
-        run: ./package.sh
-
-      - name: Install web-ext
-        run: npm install --no-progress --silent -g web-ext
-
-      - name: Lint Firefox bundle
-        run: web-ext lint --source-dir=dist/firefox
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        run: ./package.sh "$VERSION"
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ steps.version.outputs.version }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          files: |
+          name: dist
+          if-no-files-found: error
+          path: |
             dist/pasejo-firefox.xpi
             dist/pasejo-chromium.zip
+            dist/SHA256SUMS
+  lint:
+    name: Lint Firefox bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: lts/*
+          package-manager-cache: false
+      - name: Build extension
+        run: ./package.sh "${GITHUB_REF_NAME#v}"
+      - name: Install web-ext
+        run: npm install --no-progress --silent -g web-ext
+      - name: Lint Firefox bundle
+        run: web-ext lint --source-dir=dist/firefox
+  github:
+    name: GitHub Release
+    needs: [build, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release
+      id-token: write # cosign keyless sign-blob
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Check archives against SHA256SUMS
+        working-directory: dist
+        run: sha256sum --strict -c SHA256SUMS
+      - uses: metio/ci/cosign-sign-blob@6e8776dc59abdfffa793903f100e89f1aacb9c2e # 2026.11.2023135
+        with:
+          file: dist/SHA256SUMS
+      - name: Create Release
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          --repo "$GITHUB_REPOSITORY"
+          --verify-tag
+          --title "$VERSION"
+          --generate-notes
+          dist/pasejo-firefox.xpi
+          dist/pasejo-chromium.zip
+          dist/SHA256SUMS
+          dist/SHA256SUMS.bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
