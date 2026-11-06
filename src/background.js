@@ -116,6 +116,17 @@ const ACTION_VALIDATORS = {
     if (response.results !== undefined && !Array.isArray(response.results)) {
       throw new Error("`results` is not an array");
     }
+    // Present only when nothing matched: the stored domains the queried
+    // one resembles, which the popup names in its warning.
+    if (
+      response.lookalikes !== undefined &&
+      !(
+        Array.isArray(response.lookalikes) &&
+        response.lookalikes.every((domain) => typeof domain === "string")
+      )
+    ) {
+      throw new Error("`lookalikes` is not an array of strings");
+    }
   },
   // A reveal is the one reply that carries a password, so it is the one
   // reply whose credential the popup must be able to fill as-is.

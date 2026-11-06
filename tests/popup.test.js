@@ -41,6 +41,8 @@ const EXPOSED = [
   "runQuery",
   "runMultiStoreQuery",
   "showMatches",
+  "lookalikeDomains",
+  "MAX_LOOKALIKES_SHOWN",
   "renderMatch",
   "button",
   "fillIntoActiveTab",
@@ -4518,6 +4520,131 @@ describe("popup.js", () => {
       await vi.waitFor(() => expect(filled).toEqual([0]));
       expect(row.querySelector(".confirm")).toBeNull();
       expect(revealRequests(api)).toHaveLength(1);
+    });
+  });
+
+  describe("look-alike warning", () => {
+    const WARNING =
+      "Careful: you have no login for examp1e.com, but it looks like example.com, where you do. Check the address bar before you enter anything.";
+
+    async function querySingle(popup, api, response) {
+      api.runtime.sendMessage = vi.fn(async () => ({ ok: true, response }));
+      popup.state.domain = "examp1e.com";
+      popup.state.store = "personal";
+      await popup.runQuery();
+    }
+
+    it("starts hidden", async () => {
+      const { popup } = await setUp();
+      expect(popup.elements.warning.hidden).toBe(true);
+      expect(popup.elements.warning.getAttribute("role")).toBe("alert");
+    });
+
+    it("names the stored domain the page resembles when nothing matched", async () => {
+      const { api, popup } = await setUp();
+      await querySingle(popup, api, { results: [], lookalikes: ["example.com"] });
+      expect(popup.elements.warning.hidden).toBe(false);
+      expect(popup.elements.warning.textContent).toBe(WARNING);
+      expect(popup.elements.status.textContent).toBe("No matches for examp1e.com.");
+    });
+
+    it("stays hidden when the reply names no look-alike", async () => {
+      const { api, popup } = await setUp();
+      await querySingle(popup, api, { results: [] });
+      expect(popup.elements.warning.hidden).toBe(true);
+      expect(popup.elements.warning.textContent).toBe("");
+    });
+
+    it("stays hidden next to matches", async () => {
+      const { api, popup } = await setUp();
+      await querySingle(popup, api, {
+        results: [{ name: "alice", store: "personal", match_kind: "url_field", score: 1 }],
+        lookalikes: ["example.com"],
+      });
+      expect(popup.elements.warning.hidden).toBe(true);
+    });
+
+    it("stays hidden when the host reports an error", async () => {
+      const { api, popup } = await setUp();
+      await querySingle(popup, api, { error: "identity_locked", lookalikes: ["example.com"] });
+      expect(popup.elements.warning.hidden).toBe(true);
+    });
+
+    it("is cleared by the next search", async () => {
+      const { api, popup } = await setUp();
+      await querySingle(popup, api, { results: [], lookalikes: ["example.com"] });
+      await querySingle(popup, api, { results: [] });
+      expect(popup.elements.warning.hidden).toBe(true);
+      expect(popup.elements.warning.textContent).toBe("");
+    });
+
+    it("lists several domains sorted, without duplicates or non-strings, up to the display limit", async () => {
+      const { popup } = await setUp();
+      expect(
+        popup.lookalikeDomains([
+          ["example.org", "example.com"],
+          ["example.com", 7, null],
+          undefined,
+          "example.net",
+        ]),
+      ).toEqual(["example.com", "example.org"]);
+      const many = Array.from({ length: popup.MAX_LOOKALIKES_SHOWN + 2 }, (_, i) => `site${i}.test`);
+      expect(popup.lookalikeDomains([many])).toEqual(many.slice(0, popup.MAX_LOOKALIKES_SHOWN));
+    });
+
+    it("joins several domains in the warning", async () => {
+      const { api, popup } = await setUp();
+      await querySingle(popup, api, {
+        results: [],
+        lookalikes: ["example.com", "example.co.uk"],
+      });
+      expect(popup.elements.warning.textContent).toContain(
+        "it looks like example.co.uk, example.com, where you do",
+      );
+    });
+
+    describe("across all stores", () => {
+      async function queryAll(popup, api, responses) {
+        popup.state.domain = "examp1e.com";
+        popup.state.store = popup.ALL_STORES;
+        popup.state.protocolOk = true;
+        popup.state.stores = responses.map((_, i) => ({ name: `s${i}` }));
+        const done = popup.runQuery();
+        await flushAsync();
+        await driveStreamReplies(
+          api,
+          responses.map((response, index) => ({ type: "result", index, response })),
+        );
+        await done;
+      }
+
+      it("merges the look-alikes every store named", async () => {
+        const { api, popup } = await setUp();
+        await queryAll(popup, api, [
+          { results: [], lookalikes: ["example.com"] },
+          { results: [], lookalikes: ["example.com", "example.co.uk"] },
+          { error: "identity_locked" },
+        ]);
+        expect(popup.elements.warning.hidden).toBe(false);
+        expect(popup.elements.warning.textContent).toContain(
+          "it looks like example.co.uk, example.com, where you do",
+        );
+      });
+
+      it("warns nothing when any store matched the page", async () => {
+        const { api, popup } = await setUp();
+        await queryAll(popup, api, [
+          { results: [], lookalikes: ["example.com"] },
+          { results: [{ name: "alice", store: "s1", match_kind: "name", score: 0.5 }] },
+        ]);
+        expect(popup.elements.warning.hidden).toBe(true);
+      });
+
+      it("warns nothing when no store named a look-alike", async () => {
+        const { api, popup } = await setUp();
+        await queryAll(popup, api, [{ results: [] }, { results: [] }]);
+        expect(popup.elements.warning.hidden).toBe(true);
+      });
     });
   });
 });

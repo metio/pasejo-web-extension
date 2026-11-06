@@ -84,6 +84,17 @@ with it:
   passes this flag along without enforcing it, so the confirmation is
   only as strong as the extension that asks.
 
+When nothing in the store matches the page, the host also compares the
+page's domain with the domains of your stored URLs. A domain that looks
+like one of them — the same name with a swapped look-alike character
+(`examp1e.com`, `rn` for `m`), a homoglyph from another script, one
+character added, dropped or replaced, two neighbouring characters
+swapped, or the same name under another public suffix — makes the popup warn that you have no login for this
+site but one for the domain it resembles, and to check the address bar.
+Internationalized domains are shown in their `xn--` form so the warning
+cannot itself be spoofed by look-alike glyphs. The comparison runs in
+the host on your machine; nothing leaves it.
+
 The fill puts a credential only into fields you can see. A field that
 is hidden, transparent, outside the page's scrollable area or covered
 by another element is skipped; when no visible field is left, nothing

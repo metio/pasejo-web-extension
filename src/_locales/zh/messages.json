@@ -276,5 +276,13 @@
   "cancelButton": {
     "message": "取消",
     "description": "Button in the confirmation prompt that closes it without filling."
+  },
+  "warningLookalike": {
+    "message": "注意：您没有 $DOMAIN$ 的登录信息，但它与您有登录信息的 $LOOKALIKES$ 相似。输入任何内容前请先检查地址栏。",
+    "description": "Warning shown when the page matches no secret but its domain resembles domains the store holds logins for.",
+    "placeholders": {
+      "domain": { "content": "$1" },
+      "lookalikes": { "content": "$2" }
+    }
   }
 }

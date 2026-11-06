@@ -17,6 +17,7 @@ export function buildPopupDom(document) {
       <button id="refresh" type="button" title="Re-query the host" data-i18n="refreshButton" data-i18n-title="refreshButtonTitle">Refresh</button>
     </section>
     <section id="status" class="status" role="status" aria-live="polite"></section>
+    <section id="warning" class="warning" role="alert" hidden></section>
     <ul id="results" class="results"></ul>
   `;
 }

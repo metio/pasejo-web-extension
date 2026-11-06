@@ -15,6 +15,7 @@ const elements = {
   store: document.getElementById("store"),
   refresh: document.getElementById("refresh"),
   status: document.getElementById("status"),
+  warning: document.getElementById("warning"),
   results: document.getElementById("results"),
 };
 
@@ -486,6 +487,7 @@ async function runQuery() {
   // second query that came in via the change / refresh handler.
   const generation = ++state.queryGeneration;
   closeConfirmation();
+  clearLookalikeWarning();
   elements.results.replaceChildren();
   if (!state.domain) {
     setStatus(t("statusNoDomain"));
@@ -535,7 +537,11 @@ async function runQuery() {
       setStatus(t("statusMalformedResults"), "error");
       return;
     }
-    showMatches(reply.results ?? [], 0);
+    const results = reply.results ?? [];
+    showMatches(results, 0);
+    if (results.length === 0) {
+      showLookalikeWarning(lookalikeDomains([reply.lookalikes]));
+    }
   } finally {
     clearTimeout(searchingTimer);
   }
@@ -557,6 +563,7 @@ async function runMultiStoreQuery(generation) {
   const total = state.stores.length;
   const matches = [];
   const skipped = [];
+  const lookalikeLists = [];
   let answered = 0;
 
   const setSearchingStatus = () => {
@@ -606,6 +613,7 @@ async function runMultiStoreQuery(generation) {
       Array.isArray(response.results)
     ) {
       matches.push(...response.results);
+      lookalikeLists.push(response.lookalikes);
     } else {
       skipped.push(storeName);
     }
@@ -623,6 +631,53 @@ async function runMultiStoreQuery(generation) {
   const sorted = [...matches].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   elements.results.replaceChildren();
   showMatches(sorted, skipped.length, skipped);
+  // Each store names look-alikes only when it matched nothing itself, so
+  // the warning is shown only when no store matched the page.
+  if (sorted.length === 0) {
+    showLookalikeWarning(lookalikeDomains(lookalikeLists));
+  }
+}
+
+// How many look-alike domains the warning names at most.
+const MAX_LOOKALIKES_SHOWN = 3;
+
+// The look-alike domains the `lookalikes` lists of one or more query
+// replies name: strings only, deduplicated, sorted, at most
+// `MAX_LOOKALIKES_SHOWN`. The host sends them in ASCII form, so an
+// internationalized domain shows as `xn--…` rather than in glyphs that
+// could themselves imitate another domain.
+function lookalikeDomains(lists) {
+  const domains = new Set();
+  for (const list of lists) {
+    if (!Array.isArray(list)) {
+      continue;
+    }
+    for (const domain of list) {
+      if (typeof domain === "string") {
+        domains.add(domain);
+      }
+    }
+  }
+  return [...domains].sort().slice(0, MAX_LOOKALIKES_SHOWN);
+}
+
+// Warns that the page has no match but resembles `domains`, sites the
+// store holds logins for: the page may be imitating one of them.
+function showLookalikeWarning(domains) {
+  if (domains.length === 0) {
+    return;
+  }
+  elements.warning.textContent = t(
+    "warningLookalike",
+    state.domain,
+    domains.join(", "),
+  );
+  elements.warning.hidden = false;
+}
+
+function clearLookalikeWarning() {
+  elements.warning.textContent = "";
+  elements.warning.hidden = true;
 }
 
 // Opens a long-lived port to the background and consumes the streamed

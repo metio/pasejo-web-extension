@@ -276,5 +276,13 @@
   "cancelButton": {
     "message": "キャンセル",
     "description": "Button in the confirmation prompt that closes it without filling."
+  },
+  "warningLookalike": {
+    "message": "注意: $DOMAIN$ のログイン情報はありませんが、ログイン情報のある $LOOKALIKES$ によく似ています。何かを入力する前にアドレスバーを確認してください。",
+    "description": "Warning shown when the page matches no secret but its domain resembles domains the store holds logins for.",
+    "placeholders": {
+      "domain": { "content": "$1" },
+      "lookalikes": { "content": "$2" }
+    }
   }
 }

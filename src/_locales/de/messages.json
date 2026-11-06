@@ -276,5 +276,13 @@
   "cancelButton": {
     "message": "Abbrechen",
     "description": "Button in the confirmation prompt that closes it without filling."
+  },
+  "warningLookalike": {
+    "message": "Vorsicht: Für $DOMAIN$ haben Sie keine Zugangsdaten, die Adresse ähnelt aber $LOOKALIKES$, wofür Sie welche haben. Prüfen Sie die Adressleiste, bevor Sie etwas eingeben.",
+    "description": "Warning shown when the page matches no secret but its domain resembles domains the store holds logins for.",
+    "placeholders": {
+      "domain": { "content": "$1" },
+      "lookalikes": { "content": "$2" }
+    }
   }
 }

@@ -41,6 +41,14 @@ a known property of the design, not a vulnerability.
   second so the second click of a double-click cannot confirm. A
   modified extension, or any other client of the host, can skip that
   question.
+* **Look-alike domains are named.** When a page matches no secret, the
+  host lists the stored registrable domains the page's domain
+  resembles (homoglyph skeleton, common ASCII confusables, one edit on
+  the name, same name under another public suffix), and the popup warns
+  with those domains in ASCII form. The check is a warning, not a
+  block: a look-alike that the host's rules miss, such as the real
+  domain embedded in a subdomain of another site
+  (`example.com.evil.test`), gets no warning.
 * **No UI inside web pages.** The extension never draws anything into
   a page: no inline buttons or suggestion lists in fields, no injected
   elements, shadow roots, frames or dialogs. Anything drawn inside a

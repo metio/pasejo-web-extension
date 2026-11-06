@@ -244,6 +244,27 @@ describe("background.js", () => {
       });
     });
 
+    it("accepts a query reply naming look-alike domains", async () => {
+      const reply = await exchangeQuery({
+        results: [],
+        lookalikes: ["example.com", "xn--exmple-cua.com"],
+      });
+      expect(reply.response).toEqual({
+        results: [],
+        lookalikes: ["example.com", "xn--exmple-cua.com"],
+      });
+    });
+
+    it("synthesises decode_error when `lookalikes` is not an array of strings", async () => {
+      for (const lookalikes of ["example.com", { 0: "example.com" }, [1], [null]]) {
+        const reply = await exchangeQuery({ results: [], lookalikes });
+        expect(reply.response).toEqual({
+          error: "decode_error",
+          hint: "`lookalikes` is not an array of strings",
+        });
+      }
+    });
+
     async function exchangeReveal(payload) {
       const resultPromise = invokeBackgroundListener(api, {
         type: "reveal",

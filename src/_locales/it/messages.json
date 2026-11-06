@@ -276,5 +276,13 @@
   "cancelButton": {
     "message": "Annulla",
     "description": "Button in the confirmation prompt that closes it without filling."
+  },
+  "warningLookalike": {
+    "message": "Attenzione: non hai credenziali per $DOMAIN$, ma somiglia a $LOOKALIKES$, per cui le hai. Controlla la barra degli indirizzi prima di inserire qualsiasi cosa.",
+    "description": "Warning shown when the page matches no secret but its domain resembles domains the store holds logins for.",
+    "placeholders": {
+      "domain": { "content": "$1" },
+      "lookalikes": { "content": "$2" }
+    }
   }
 }

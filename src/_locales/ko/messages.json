@@ -276,5 +276,13 @@
   "cancelButton": {
     "message": "취소",
     "description": "Button in the confirmation prompt that closes it without filling."
+  },
+  "warningLookalike": {
+    "message": "주의: $DOMAIN$에 대한 로그인 정보는 없지만, 로그인 정보가 있는 $LOOKALIKES$와(과) 비슷합니다. 무엇이든 입력하기 전에 주소 표시줄을 확인하세요.",
+    "description": "Warning shown when the page matches no secret but its domain resembles domains the store holds logins for.",
+    "placeholders": {
+      "domain": { "content": "$1" },
+      "lookalikes": { "content": "$2" }
+    }
   }
 }
