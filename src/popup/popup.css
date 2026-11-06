@@ -205,3 +205,38 @@ body {
 .results .actions button:hover {
   background: color-mix(in srgb, var(--accent) 25%, transparent);
 }
+
+.results .confirm {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  cursor: default;
+}
+
+.results .confirm-text {
+  flex: 1 1 100%;
+}
+
+.results .confirm button {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.results .confirm button:first-of-type:not([aria-disabled="true"]) {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
+.results .confirm button[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.6;
+}

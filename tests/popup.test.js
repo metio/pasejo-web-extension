@@ -44,6 +44,8 @@ const EXPOSED = [
   "renderMatch",
   "button",
   "fillIntoActiveTab",
+  "needsConfirmation",
+  "CONFIRM_ARM_DELAY_MS",
   "fillAcrossFrames",
   "injectFillScript",
   "createFrameCollector",
@@ -4359,6 +4361,163 @@ describe("popup.js", () => {
       await flushAsync();
       await flushAsync();
       expect(api.runtime.sendMessage).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("secrets whose policy asks for confirmation", () => {
+    const match = Object.freeze({
+      name: "bank/alice",
+      store: "personal",
+      username: "alice",
+      url: "https://example.com",
+      match_kind: "url_field",
+      score: 1,
+      confirm: true,
+    });
+
+    function rowFor(popup, entry = match) {
+      const row = popup.renderMatch(entry);
+      popup.elements.results.appendChild(row);
+      return row;
+    }
+
+    function okFrames(api) {
+      return stubFrames(api, [
+        { frameId: 0, fill: { ok: true, filled: { username: true, password: true } } },
+      ]);
+    }
+
+    it("asks on the row before anything is revealed", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api);
+      const filled = okFrames(api);
+      const row = rowFor(popup);
+      row.click();
+      await flushAsync();
+      expect(revealRequests(api)).toEqual([]);
+      expect(filled).toEqual([]);
+      expect(api.scripting.executeScript).not.toHaveBeenCalled();
+      const prompt = row.querySelector(".confirm");
+      expect(prompt.textContent).toContain(
+        "Fill bank/alice into example.com? This secret asks to be confirmed every time.",
+      );
+      const [confirm, cancel] = prompt.querySelectorAll("button");
+      expect(confirm.textContent).toBe("Fill now");
+      expect(cancel.textContent).toBe("Cancel");
+      expect(document.activeElement).toBe(cancel);
+    });
+
+    it("keeps the confirm button disabled long enough that a double-click cannot confirm", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api);
+      const filled = okFrames(api);
+      vi.useFakeTimers();
+      const row = rowFor(popup);
+      row.querySelector(".actions button").click();
+      const confirm = row.querySelector(".confirm button");
+      expect(confirm.getAttribute("aria-disabled")).toBe("true");
+      confirm.click();
+      await vi.advanceTimersByTimeAsync(popup.CONFIRM_ARM_DELAY_MS - 1);
+      expect(revealRequests(api)).toEqual([]);
+      expect(row.querySelector(".confirm")).not.toBeNull();
+      expect(confirm.getAttribute("aria-disabled")).toBe("true");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(confirm.hasAttribute("aria-disabled")).toBe(false);
+      confirm.click();
+      await vi.runAllTimersAsync();
+      expect(revealRequests(api)).toHaveLength(1);
+      expect(filled).toEqual([0]);
+      expect(row.querySelector(".confirm")).toBeNull();
+      expect(popup.elements.status.textContent).toBe("Filled bank/alice.");
+    });
+
+    it("cancel closes the prompt, releases nothing and returns focus to the row", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api);
+      const filled = okFrames(api);
+      vi.useFakeTimers();
+      const row = rowFor(popup);
+      row.click();
+      const cancel = row.querySelectorAll(".confirm button")[1];
+      cancel.click();
+      await vi.runAllTimersAsync();
+      expect(row.querySelector(".confirm")).toBeNull();
+      expect(document.activeElement).toBe(row);
+      expect(revealRequests(api)).toEqual([]);
+      expect(filled).toEqual([]);
+    });
+
+    it("keeps one prompt when the row is activated again", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api);
+      okFrames(api);
+      const row = rowFor(popup);
+      row.click();
+      row.click();
+      row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await flushAsync();
+      expect(row.querySelectorAll(".confirm")).toHaveLength(1);
+      expect(revealRequests(api)).toEqual([]);
+    });
+
+    it("moves the prompt when another row asks for confirmation", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api);
+      okFrames(api);
+      const first = rowFor(popup);
+      const second = rowFor(popup, { ...match, name: "bank/bob" });
+      first.click();
+      second.click();
+      await flushAsync();
+      expect(first.querySelector(".confirm")).toBeNull();
+      expect(second.querySelector(".confirm").textContent).toContain(
+        "Fill bank/bob into example.com?",
+      );
+    });
+
+    it("drops an open prompt when the results are listed again", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api, { results: { "example.com": [match] } });
+      okFrames(api);
+      vi.useFakeTimers();
+      const row = rowFor(popup);
+      row.click();
+      const confirm = row.querySelector(".confirm button");
+      popup.state.domain = "example.com";
+      popup.state.store = "personal";
+      await popup.runQuery();
+      await vi.runAllTimersAsync();
+      expect(confirm.isConnected).toBe(false);
+      expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    });
+
+    it("asks instead of filling when the fill is started without a confirmation", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api);
+      okFrames(api);
+      await popup.fillIntoActiveTab(match);
+      expect(revealRequests(api)).toEqual([]);
+      expect(api.tabs.query).not.toHaveBeenCalled();
+      expect(popup.state.filling).toBe(false);
+    });
+
+    it("treats any value of the flag other than false as asking", async () => {
+      const { popup } = await setUp();
+      expect(popup.needsConfirmation({ confirm: true })).toBe(true);
+      expect(popup.needsConfirmation({ confirm: "always" })).toBe(true);
+      expect(popup.needsConfirmation({ confirm: false })).toBe(false);
+      expect(popup.needsConfirmation({})).toBe(false);
+    });
+
+    it("fills a secret without the flag on the first click", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api);
+      const filled = okFrames(api);
+      const row = rowFor(popup, { ...match, confirm: false });
+      row.click();
+      await vi.waitFor(() => expect(filled).toEqual([0]));
+      expect(row.querySelector(".confirm")).toBeNull();
+      expect(revealRequests(api)).toHaveLength(1);
     });
   });
 });

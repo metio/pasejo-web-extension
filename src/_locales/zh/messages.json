@@ -260,5 +260,21 @@
   "errorNotMatched": {
     "message": "主机未针对此网站发放该凭据。请刷新后重新选择匹配项。",
     "description": "Host error: the host refused to release the picked credential for the page's site."
+  },
+  "confirmFillPrompt": {
+    "message": "在 $HOST$ 上填充 $NAME$？此条目要求每次填充前都进行确认。",
+    "description": "Prompt on a result row whose secret asks to be confirmed before every fill.",
+    "placeholders": {
+      "name": { "content": "$1" },
+      "host": { "content": "$2" }
+    }
+  },
+  "confirmFillButton": {
+    "message": "立即填充",
+    "description": "Button in the confirmation prompt that fills the secret."
+  },
+  "cancelButton": {
+    "message": "取消",
+    "description": "Button in the confirmation prompt that closes it without filling."
   }
 }

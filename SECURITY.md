@@ -31,6 +31,16 @@ a known property of the design, not a vulnerability.
   (`not_matched`) when the secret does not match it. The current TOTP
   code is released only for a stored URL naming the page's exact host;
   HOTP codes are never released.
+* **Fill policies travel with the secret.** A secret's
+  `pasejo-fill: never` and `pasejo-fill: exact-host` fields are
+  enforced by the host on both `query` and `reveal`, so a never-filled
+  secret does not reach the extension at all. `pasejo-confirm: always`
+  is enforced by the extension alone: the host marks such a match with
+  `confirm: true` and the popup asks on the match's row before it sends
+  the `reveal`. The confirm button ignores clicks for its first half
+  second so the second click of a double-click cannot confirm. A
+  modified extension, or any other client of the host, can skip that
+  question.
 * **No UI inside web pages.** The extension never draws anything into
   a page: no inline buttons or suggestion lists in fields, no injected
   elements, shadow roots, frames or dialogs. Anything drawn inside a

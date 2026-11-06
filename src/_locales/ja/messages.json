@@ -260,5 +260,21 @@
   "errorNotMatched": {
     "message": "ホストはこのサイトに対してこの認証情報を開示しませんでした。更新して、もう一度一致項目を選んでください。",
     "description": "Host error: the host refused to release the picked credential for the page's site."
+  },
+  "confirmFillPrompt": {
+    "message": "$NAME$ を $HOST$ に入力しますか？このシークレットは毎回確認を求めます。",
+    "description": "Prompt on a result row whose secret asks to be confirmed before every fill.",
+    "placeholders": {
+      "name": { "content": "$1" },
+      "host": { "content": "$2" }
+    }
+  },
+  "confirmFillButton": {
+    "message": "今すぐ入力",
+    "description": "Button in the confirmation prompt that fills the secret."
+  },
+  "cancelButton": {
+    "message": "キャンセル",
+    "description": "Button in the confirmation prompt that closes it without filling."
   }
 }

@@ -260,5 +260,21 @@
   "errorNotMatched": {
     "message": "호스트가 이 사이트에 대해 이 자격 증명을 공개하지 않았습니다. 새로 고친 뒤 일치 항목을 다시 선택하세요.",
     "description": "Host error: the host refused to release the picked credential for the page's site."
+  },
+  "confirmFillPrompt": {
+    "message": "$HOST$에 $NAME$을(를) 채울까요? 이 비밀은 채울 때마다 확인을 요구합니다.",
+    "description": "Prompt on a result row whose secret asks to be confirmed before every fill.",
+    "placeholders": {
+      "name": { "content": "$1" },
+      "host": { "content": "$2" }
+    }
+  },
+  "confirmFillButton": {
+    "message": "지금 채우기",
+    "description": "Button in the confirmation prompt that fills the secret."
+  },
+  "cancelButton": {
+    "message": "취소",
+    "description": "Button in the confirmation prompt that closes it without filling."
   }
 }

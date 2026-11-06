@@ -68,6 +68,22 @@ then returns the password, which goes straight into the page. A secret
 that no longer matches is refused with *The host did not release this
 credential for this site*.
 
+A secret can carry a fill policy in its own fields, stored encrypted
+with it:
+
+* `pasejo-fill: never` keeps the secret out of the browser entirely.
+  The host leaves it out of every search and refuses to release it, so
+  it never appears in the popup.
+* `pasejo-fill: exact-host` lists and releases the secret only on the
+  exact host of one of its URL fields, never on a sibling subdomain or
+  through its name.
+* `pasejo-confirm: always` makes the popup ask before every fill. Picking
+  the match opens a prompt on its row naming the secret and the site;
+  nothing is released until you choose *Fill now*, which stays inactive
+  for half a second so a double-click on *Fill* cannot confirm. The host
+  passes this flag along without enforcing it, so the confirmation is
+  only as strong as the extension that asks.
+
 The fill puts a credential only into fields you can see. A field that
 is hidden, transparent, outside the page's scrollable area or covered
 by another element is skipped; when no visible field is left, nothing

@@ -260,5 +260,21 @@
   "errorNotMatched": {
     "message": "Der Host hat diese Zugangsdaten für diese Seite nicht freigegeben. Aktualisieren Sie und wählen Sie den Treffer erneut.",
     "description": "Host error: the host refused to release the picked credential for the page's site."
+  },
+  "confirmFillPrompt": {
+    "message": "$NAME$ auf $HOST$ ausfüllen? Dieser Eintrag verlangt vor jedem Ausfüllen eine Bestätigung.",
+    "description": "Prompt on a result row whose secret asks to be confirmed before every fill.",
+    "placeholders": {
+      "name": { "content": "$1" },
+      "host": { "content": "$2" }
+    }
+  },
+  "confirmFillButton": {
+    "message": "Jetzt ausfüllen",
+    "description": "Button in the confirmation prompt that fills the secret."
+  },
+  "cancelButton": {
+    "message": "Abbrechen",
+    "description": "Button in the confirmation prompt that closes it without filling."
   }
 }

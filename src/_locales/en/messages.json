@@ -260,5 +260,21 @@
   "errorNotMatched": {
     "message": "The host did not release this credential for this site. Refresh and pick the match again.",
     "description": "Host error: the host refused to release the picked credential for the page's site."
+  },
+  "confirmFillPrompt": {
+    "message": "Fill $NAME$ into $HOST$? This secret asks to be confirmed every time.",
+    "description": "Prompt on a result row whose secret asks to be confirmed before every fill.",
+    "placeholders": {
+      "name": { "content": "$1" },
+      "host": { "content": "$2" }
+    }
+  },
+  "confirmFillButton": {
+    "message": "Fill now",
+    "description": "Button in the confirmation prompt that fills the secret."
+  },
+  "cancelButton": {
+    "message": "Cancel",
+    "description": "Button in the confirmation prompt that closes it without filling."
   }
 }

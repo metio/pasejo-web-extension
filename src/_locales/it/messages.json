@@ -260,5 +260,21 @@
   "errorNotMatched": {
     "message": "L'host non ha rilasciato questa credenziale per questo sito. Aggiorna e scegli di nuovo la corrispondenza.",
     "description": "Host error: the host refused to release the picked credential for the page's site."
+  },
+  "confirmFillPrompt": {
+    "message": "Compilare $NAME$ su $HOST$? Questo segreto chiede una conferma a ogni compilazione.",
+    "description": "Prompt on a result row whose secret asks to be confirmed before every fill.",
+    "placeholders": {
+      "name": { "content": "$1" },
+      "host": { "content": "$2" }
+    }
+  },
+  "confirmFillButton": {
+    "message": "Compila ora",
+    "description": "Button in the confirmation prompt that fills the secret."
+  },
+  "cancelButton": {
+    "message": "Annulla",
+    "description": "Button in the confirmation prompt that closes it without filling."
   }
 }

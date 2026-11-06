@@ -485,6 +485,7 @@ async function runQuery() {
   // matches. Stops a slower first query from clobbering a fresher
   // second query that came in via the change / refresh handler.
   const generation = ++state.queryGeneration;
+  closeConfirmation();
   elements.results.replaceChildren();
   if (!state.domain) {
     setStatus(t("statusNoDomain"));
@@ -928,12 +929,82 @@ function fillMessage(credential) {
   };
 }
 
-async function fillIntoActiveTab(match, row) {
+// Whether the secret's policy asks the user to confirm every fill. The
+// host passes the flag along and does not enforce it, so the popup is
+// the one place that asks. Anything other than an absent or `false` flag
+// asks.
+function needsConfirmation(match) {
+  return match.confirm !== undefined && match.confirm !== false;
+}
+
+// How long the confirm button of a prompt stays disabled after the
+// prompt opens, so the second click of a double-click on Fill cannot
+// confirm the fill the first click asked about.
+const CONFIRM_ARM_DELAY_MS = 500;
+
+// The confirmation prompt open on a result row, or null:
+// `{ row, element, timer }`. At most one is open.
+let openConfirmation = null;
+
+// Opens the prompt asking whether to fill `match` into the page, on its
+// row. Nothing is revealed until the user confirms. Focus moves to
+// Cancel, so a stray Enter or Space does not confirm either.
+function askToConfirm(match, row) {
+  if (openConfirmation?.row === row) {
+    return;
+  }
+  closeConfirmation();
+  const element = document.createElement("div");
+  element.className = "confirm";
+  element.setAttribute("role", "group");
+  const text = document.createElement("span");
+  text.className = "confirm-text";
+  text.textContent = t("confirmFillPrompt", match.name, state.page.hostname);
+  element.setAttribute("aria-label", text.textContent);
+  // `aria-disabled` rather than `disabled`: the button keeps receiving
+  // clicks and ignores them until armed, in every browser alike.
+  const confirm = button(t("confirmFillButton"), () => {
+    if (confirm.getAttribute("aria-disabled") === "true") {
+      return;
+    }
+    closeConfirmation();
+    fillIntoActiveTab(match, row, { confirmed: true });
+  });
+  confirm.setAttribute("aria-disabled", "true");
+  const cancel = button(t("cancelButton"), () => {
+    closeConfirmation();
+    row.focus();
+  });
+  element.append(text, confirm, cancel);
+  row.appendChild(element);
+  const timer = setTimeout(() => {
+    confirm.removeAttribute("aria-disabled");
+  }, CONFIRM_ARM_DELAY_MS);
+  openConfirmation = { row, element, timer };
+  cancel.focus();
+}
+
+function closeConfirmation() {
+  if (openConfirmation === null) {
+    return;
+  }
+  clearTimeout(openConfirmation.timer);
+  openConfirmation.element.remove();
+  openConfirmation = null;
+}
+
+async function fillIntoActiveTab(match, row, { confirmed = false } = {}) {
   // Double-click guard: clicking the row twice would otherwise send two
   // fan-outs and race the 600 ms popup close. The flag is set BEFORE
   // any async work so a queued second click bails immediately, not
   // after both have already started a tab query.
   if (state.filling) {
+    return;
+  }
+  if (needsConfirmation(match) && !confirmed) {
+    if (row) {
+      askToConfirm(match, row);
+    }
     return;
   }
   state.filling = true;

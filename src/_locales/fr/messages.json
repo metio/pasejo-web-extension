@@ -260,5 +260,21 @@
   "errorNotMatched": {
     "message": "L'hôte n'a pas libéré cet identifiant pour ce site. Actualisez et choisissez de nouveau la correspondance.",
     "description": "Host error: the host refused to release the picked credential for the page's site."
+  },
+  "confirmFillPrompt": {
+    "message": "Remplir $NAME$ sur $HOST$ ? Ce secret demande une confirmation à chaque remplissage.",
+    "description": "Prompt on a result row whose secret asks to be confirmed before every fill.",
+    "placeholders": {
+      "name": { "content": "$1" },
+      "host": { "content": "$2" }
+    }
+  },
+  "confirmFillButton": {
+    "message": "Remplir maintenant",
+    "description": "Button in the confirmation prompt that fills the secret."
+  },
+  "cancelButton": {
+    "message": "Annuler",
+    "description": "Button in the confirmation prompt that closes it without filling."
   }
 }
