@@ -68,11 +68,10 @@
     // The single `protocol_version` value the extension knows how to
     // talk to. Mirrors `PROTOCOL_VERSION` in src/browser/protocol.rs;
     // the extension refuses to operate against any host that doesn't
-    // report this exact number. The version-negotiation mechanism is
-    // here from day one so the very first incompatible change can
-    // bump it and surface a clear error to the user, but there is
-    // currently only one valid version.
-    PROTOCOL_VERSION: 1,
+    // report this exact number. Version 2 is the two-step release: a
+    // `query` answers with metadata only and a `reveal` releases one
+    // credential for one domain.
+    PROTOCOL_VERSION: 2,
 
     // Storage key + helpers for the per-host remembered store (defined
     // above).
@@ -84,6 +83,7 @@
     ACTION: Object.freeze({
       Query: "query",
       ListStores: "list_stores",
+      Reveal: "reveal",
     }),
 
     // Error kinds the host can return. Mirrors `ErrorKind` in
@@ -97,6 +97,7 @@
       StoreUnreachable: "store_unreachable",
       NoStoreConfigured: "no_store_configured",
       ResponseTooLarge: "response_too_large",
+      NotMatched: "not_matched",
     }),
 
     // `_locales` message id per host error kind. Anything outside this
@@ -111,6 +112,7 @@
       store_unreachable: "errorStoreUnreachable",
       decode_error: "errorDecodeError",
       response_too_large: "errorResponseTooLarge",
+      not_matched: "errorNotMatched",
     }),
 
     // Localized-string lookup (see `t` above), exposed so the popup and

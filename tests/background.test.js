@@ -244,6 +244,72 @@ describe("background.js", () => {
       });
     });
 
+    async function exchangeReveal(payload) {
+      const resultPromise = invokeBackgroundListener(api, {
+        type: "reveal",
+        store: "personal",
+        name: "alice",
+        domain: "example.com",
+      });
+      const port = lastConnectedPort(api);
+      port.__emitMessage(payload);
+      return resultPromise;
+    }
+
+    it("accepts a reveal reply carrying a credential", async () => {
+      const credential = {
+        name: "alice",
+        store: "personal",
+        username: "alice@example.com",
+        password: "hunter2",
+        otp: "123456",
+      };
+      const reply = await exchangeReveal({ credential });
+      expect(reply).toEqual({ ok: true, response: { credential } });
+    });
+
+    it("accepts a reveal reply whose credential has no one-time code", async () => {
+      const reply = await exchangeReveal({
+        credential: { name: "a", store: "s", username: "", password: "p" },
+      });
+      expect(reply.response.credential.password).toBe("p");
+    });
+
+    it("synthesises decode_error when a reveal reply has no credential object", async () => {
+      for (const credential of [undefined, null, "p", ["p"]]) {
+        const reply = await exchangeReveal({ credential });
+        expect(reply.response).toEqual({
+          error: "decode_error",
+          hint: "`credential` is not an object",
+        });
+      }
+    });
+
+    it("synthesises decode_error when a revealed field has the wrong type", async () => {
+      const base = { name: "a", store: "s", username: "u", password: "p" };
+      for (const [field, value] of [
+        ["password", 1],
+        ["username", null],
+        ["name", undefined],
+        ["store", {}],
+        ["otp", 123456],
+      ]) {
+        const reply = await exchangeReveal({
+          credential: { ...base, [field]: value },
+        });
+        expect(reply.response).toEqual({
+          error: "decode_error",
+          hint: `\`credential.${field}\` is not a string`,
+        });
+      }
+    });
+
+    it("passes a not_matched refusal through the reveal validator", async () => {
+      const refusal = { error: "not_matched", store: "personal" };
+      const reply = await exchangeReveal(refusal);
+      expect(reply.response).toEqual(refusal);
+    });
+
     it("accepts a query reply that omits results entirely (popup defaults to [])", async () => {
       const reply = await exchangeQuery({});
       expect(reply.ok).toBe(true);
@@ -369,6 +435,29 @@ describe("background.js", () => {
       expect(port.postMessage.mock.calls[0][0].store).toBeNull();
       port.__emitMessage({ results: [] });
       await replyPromise;
+    });
+
+    it("translates a `reveal` message into a reveal request for one secret", async () => {
+      const replyPromise = invokeBackgroundListener(api, {
+        type: "reveal",
+        store: "personal",
+        name: "alice",
+        domain: "example.com",
+        password: "ignored",
+      });
+      const port = lastConnectedPort(api);
+      expect(port.postMessage).toHaveBeenCalledWith({
+        action: "reveal",
+        store: "personal",
+        name: "alice",
+        domain: "example.com",
+      });
+      port.__emitMessage({ error: "not_matched", store: "personal" });
+      const reply = await replyPromise;
+      expect(reply).toEqual({
+        ok: true,
+        response: { error: "not_matched", store: "personal" },
+      });
     });
 
     it("translates `list_stores` into a list_stores action", async () => {

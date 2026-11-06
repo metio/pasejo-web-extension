@@ -210,6 +210,10 @@
     "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
     "placeholders": { "name": { "content": "$1" } }
   },
+  "statusOtpShownSuffix": {
+    "message": " Der Einmalcode wird unten angezeigt.",
+    "description": "Appended to a fill status when the released one-time code was not filled and is shown on the result row instead."
+  },
   "errorUnknownStore": {
     "message": "Der ausgewählte Speicher existiert nicht in Ihrer pasejo-Konfiguration.",
     "description": "Host error: the requested store is not configured."
@@ -237,5 +241,9 @@
   "errorResponseTooLarge": {
     "message": "Die Antwort für diesen Speicher war zu groß für das Native-Messaging-Limit des Browsers. Kürzen Sie sehr große Geheimnis-Inhalte oder grenzen Sie die Suche ein.",
     "description": "Host error: the reply exceeded the native-messaging size limit."
+  },
+  "errorNotMatched": {
+    "message": "Der Host hat diese Zugangsdaten für diese Seite nicht freigegeben. Aktualisieren Sie und wählen Sie den Treffer erneut.",
+    "description": "Host error: the host refused to release the picked credential for the page's site."
   }
 }

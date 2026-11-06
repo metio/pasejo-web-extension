@@ -210,6 +210,10 @@
     "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
     "placeholders": { "name": { "content": "$1" } }
   },
+  "statusOtpShownSuffix": {
+    "message": " ワンタイムコードは下に表示されています。",
+    "description": "Appended to a fill status when the released one-time code was not filled and is shown on the result row instead."
+  },
   "errorUnknownStore": {
     "message": "選択したストアは pasejo の設定に存在しません。",
     "description": "Host error: the requested store is not configured."
@@ -237,5 +241,9 @@
   "errorResponseTooLarge": {
     "message": "このストアの応答はブラウザのネイティブメッセージングの上限を超えていました。非常に大きいシークレットの本文を削減するか、一致条件を絞り込んでください。",
     "description": "Host error: the reply exceeded the native-messaging size limit."
+  },
+  "errorNotMatched": {
+    "message": "ホストはこのサイトに対してこの認証情報を開示しませんでした。更新して、もう一度一致項目を選んでください。",
+    "description": "Host error: the host refused to release the picked credential for the page's site."
   }
 }

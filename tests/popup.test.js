@@ -120,6 +120,49 @@ const PAGE = Object.freeze({
 
 const allowAll = async () => true;
 
+// The credential the default host stub releases on a `reveal`.
+const CREDENTIAL = Object.freeze({
+  name: "alice",
+  store: "personal",
+  username: "alice",
+  password: "hunter2",
+});
+
+// A `reveal` callback for `fillAcrossFrames` that releases `credential`.
+function revealAs(credential = CREDENTIAL) {
+  return vi.fn(async () => ({ credential }));
+}
+
+// The popup's background traffic as the host would answer it: a
+// `reveal` gets `reveal` (a reply, or a function of the request; by
+// default `CREDENTIAL` under the requested name and store), anything
+// else the `results` listed for its domain.
+function stubHost(api, { results = {}, reveal } = {}) {
+  api.runtime.sendMessage = vi.fn(async (message) => {
+    if (message.type === "reveal") {
+      const response =
+        typeof reveal === "function"
+          ? reveal(message)
+          : (reveal ?? {
+              credential: {
+                ...CREDENTIAL,
+                name: message.name,
+                store: message.store,
+              },
+            });
+      return { ok: true, response };
+    }
+    return { ok: true, response: { results: results[message.domain] ?? [] } };
+  });
+}
+
+// The `reveal` requests the popup sent so far.
+function revealRequests(api) {
+  return api.runtime.sendMessage.mock.calls
+    .map(([message]) => message)
+    .filter((message) => message.type === "reveal");
+}
+
 // Stands in for `scripting.executeScript`: every entry in `frames`
 // "runs" fill.js — opens a pasejo-frame port carrying the sender the
 // browser would stamp, reports ready (unless `ready: false`), and answers
@@ -127,6 +170,8 @@ const allowAll = async () => true;
 // "silent". Returns the ids of the frames that received a fill, in order.
 function stubFrames(api, frames) {
   const filled = [];
+  // The fill messages the frames received, in order.
+  api.__fillMessages = [];
   api.scripting.executeScript = vi.fn(async ({ target }) => {
     const results = [];
     for (const frame of frames) {
@@ -141,6 +186,7 @@ function stubFrames(api, frames) {
           return;
         }
         filled.push(frame.frameId);
+        api.__fillMessages.push(message);
         const reply = frame.fill ?? { ok: false };
         if (reply === "disconnect") {
           port.disconnect();
@@ -176,14 +222,27 @@ async function setUp({
 } = {}) {
   const api = makeApiMock();
   api.tabs.query = vi.fn().mockResolvedValue(tabs);
-  api.runtime.sendMessage = vi.fn().mockResolvedValue({
-    ok: true,
-    response: {
-      protocol_version: 1,
-      stores: [{ name: "personal", default: true }],
-      results: [],
-    },
-  });
+  api.runtime.sendMessage = vi.fn(async (message) =>
+    message?.type === "reveal"
+      ? {
+          ok: true,
+          response: {
+            credential: {
+              ...CREDENTIAL,
+              name: message.name,
+              store: message.store,
+            },
+          },
+        }
+      : {
+          ok: true,
+          response: {
+            protocol_version: 2,
+            stores: [{ name: "personal", default: true }],
+            results: [],
+          },
+        },
+  );
   api.storage.local.get = vi.fn().mockResolvedValue({});
   api.storage.local.set = vi.fn().mockResolvedValue();
   api.storage.local.remove = vi.fn().mockResolvedValue();
@@ -302,21 +361,22 @@ describe("popup.js", () => {
   });
 
   describe("isCompatibleProtocol", () => {
-    it("accepts version 1", async () => {
+    it("accepts version 2", async () => {
       const { popup } = await setUp();
-      expect(popup.isCompatibleProtocol(1)).toBe(true);
+      expect(popup.isCompatibleProtocol(2)).toBe(true);
     });
 
-    it("rejects every other integer version", async () => {
+    it("rejects every other integer version, including the metadata-and-secrets version 1", async () => {
       const { popup } = await setUp();
       expect(popup.isCompatibleProtocol(0)).toBe(false);
-      expect(popup.isCompatibleProtocol(2)).toBe(false);
+      expect(popup.isCompatibleProtocol(1)).toBe(false);
+      expect(popup.isCompatibleProtocol(3)).toBe(false);
       expect(popup.isCompatibleProtocol(99)).toBe(false);
     });
 
     it("rejects non-number values", async () => {
       const { popup } = await setUp();
-      expect(popup.isCompatibleProtocol("1")).toBe(false);
+      expect(popup.isCompatibleProtocol("2")).toBe(false);
       expect(popup.isCompatibleProtocol(null)).toBe(false);
       expect(popup.isCompatibleProtocol(undefined)).toBe(false);
     });
@@ -1495,7 +1555,7 @@ describe("popup.js", () => {
       api.runtime.sendMessage.mockResolvedValueOnce({
         ok: true,
         response: {
-          protocol_version: 1,
+          protocol_version: 2,
           stores: [{ name: "personal", default: true }],
         },
       });
@@ -1508,7 +1568,7 @@ describe("popup.js", () => {
       const { api, popup } = await setUp();
       api.runtime.sendMessage.mockResolvedValueOnce({
         ok: true,
-        response: { protocol_version: 1 },
+        response: { protocol_version: 2 },
       });
       const stores = await popup.loadStores();
       expect(stores).toEqual([]);
@@ -1550,7 +1610,7 @@ describe("popup.js", () => {
       // trailing number reads as a clause ("extension speaks protocol
       // 1") rather than a sentence fragment ("extension speaks 1").
       expect(popup.elements.status.textContent).toMatch(
-        /extension speaks protocol 1/,
+        /extension speaks protocol 2/,
       );
     });
 
@@ -1569,7 +1629,7 @@ describe("popup.js", () => {
       const { api, popup } = await setUp();
       api.runtime.sendMessage.mockResolvedValueOnce({
         ok: true,
-        response: { protocol_version: 1, stores: "broken" },
+        response: { protocol_version: 2, stores: "broken" },
       });
       const result = await popup.loadStores();
       expect(result).toBeNull();
@@ -2609,8 +2669,10 @@ describe("popup.js", () => {
   });
 
   describe("renderMatch", () => {
-    it("renders name, kind badge, and optional username/otp/store fields", async () => {
+    it("renders name, kind badge, and optional username/store fields, never a code or password", async () => {
       const { popup } = await setUp();
+      // A host that broke the metadata-only contract still gets no
+      // secret value onto the row.
       const li = popup.renderMatch({
         name: "alice@example.com",
         match_kind: "url_field",
@@ -2628,7 +2690,9 @@ describe("popup.js", () => {
       const secondaries = Array.from(
         li.querySelector(".row-secondary").children,
       ).map((c) => c.textContent);
-      expect(secondaries).toEqual(["alice", "OTP: 123456", "store: personal"]);
+      expect(secondaries).toEqual(["alice", "store: personal"]);
+      expect(li.textContent).not.toContain("hunter2");
+      expect(li.textContent).not.toContain("123456");
     });
 
     it("uses 'name' badge text for match_kind=name", async () => {
@@ -2652,7 +2716,6 @@ describe("popup.js", () => {
       const li = popup.renderMatch({
         name: "alice",
         username: "alice",
-        password: "p",
         match_kind: "name",
         score: 0.5,
       });
@@ -2671,7 +2734,6 @@ describe("popup.js", () => {
       const li = popup.renderMatch({
         name: "alice",
         username: "alice",
-        password: "p",
         match_kind: "name",
         score: 0.5,
       });
@@ -2704,7 +2766,6 @@ describe("popup.js", () => {
       const li = popup.renderMatch({
         name: "alice",
         username: "alice",
-        password: "p",
         match_kind: "name",
         score: 0.5,
       });
@@ -2994,7 +3055,7 @@ describe("popup.js", () => {
         { frameId: 1, fill: { ok: true, filled: { username: true, password: true } } },
         { frameId: 2, fill: { ok: true } },
       ]);
-      const reply = await popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
+      const reply = await popup.fillAcrossFrames(PAGE, revealAs(), allowAll);
       expect(reply.ok).toBe(true);
       // Stops at the first ok=true (frame 1); frame 2 is not tried.
       expect(filled).toEqual([0, 1]);
@@ -3006,7 +3067,7 @@ describe("popup.js", () => {
         { frameId: 0, fill: "disconnect" },
         { frameId: 1, fill: { ok: true } },
       ]);
-      const reply = await popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
+      const reply = await popup.fillAcrossFrames(PAGE, revealAs(), allowAll);
       expect(reply.ok).toBe(true);
       expect(filled).toEqual([0, 1]);
     });
@@ -3014,7 +3075,7 @@ describe("popup.js", () => {
     it("returns { ok: false } when no frame reports success", async () => {
       const { api, popup } = await setUp();
       stubFrames(api, [{ frameId: 0, fill: { ok: false } }]);
-      const reply = await popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
+      const reply = await popup.fillAcrossFrames(PAGE, revealAs(), allowAll);
       expect(reply.ok).toBe(false);
     });
 
@@ -3024,7 +3085,7 @@ describe("popup.js", () => {
         .fn()
         .mockRejectedValue(new Error("Cannot access a chrome:// URL"));
       await expect(
-        popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll),
+        popup.fillAcrossFrames(PAGE, revealAs(), allowAll),
       ).resolves.toEqual({ ok: false, noAccess: true });
     });
 
@@ -3034,7 +3095,7 @@ describe("popup.js", () => {
         { frameId: 0, fill: { ok: true } },
         { frameId: 1, editableFocused: true, fill: { ok: true } },
       ]);
-      await popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
+      await popup.fillAcrossFrames(PAGE, revealAs(), allowAll);
       expect(filled).toEqual([1]);
     });
 
@@ -3044,7 +3105,7 @@ describe("popup.js", () => {
         { frameId: 0, focused: true, fill: { ok: false } },
         { frameId: 1, fill: { ok: true } },
       ]);
-      await popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
+      await popup.fillAcrossFrames(PAGE, revealAs(), allowAll);
       expect(filled).toEqual([0, 1]);
     });
 
@@ -3054,7 +3115,7 @@ describe("popup.js", () => {
       const filled = stubFrames(api, [
         { frameId: 0, ready: false, fill: { ok: true } },
       ]);
-      const reply = popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
+      const reply = popup.fillAcrossFrames(PAGE, revealAs(), allowAll);
       await vi.advanceTimersByTimeAsync(popup.FRAME_HANDSHAKE_TIMEOUT_MS);
       await expect(reply).resolves.toEqual({ ok: false, refused: 0 });
       expect(filled).toEqual([]);
@@ -3063,7 +3124,7 @@ describe("popup.js", () => {
     it("closes every frame port and stops collecting once done", async () => {
       const { api, popup } = await setUp();
       stubFrames(api, [{ frameId: 0, fill: { ok: true } }]);
-      await popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
+      await popup.fillAcrossFrames(PAGE, revealAs(), allowAll);
       const framePair = api.__streamPairs.at(-1);
       expect(framePair.backgroundPort.disconnect).toHaveBeenCalled();
       // A late port is refused now that no fill is collecting.
@@ -3078,14 +3139,303 @@ describe("popup.js", () => {
         .fn()
         .mockReturnValueOnce(first.promise)
         .mockResolvedValueOnce([]);
-      const older = popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
-      const newer = popup.fillAcrossFrames(PAGE, { type: "fill" }, allowAll);
+      const older = popup.fillAcrossFrames(PAGE, revealAs(), allowAll);
+      const newer = popup.fillAcrossFrames(PAGE, revealAs(), allowAll);
       await newer;
       first.resolve([]);
       await older;
       // Neither attempt left a collector behind.
       api.__connectFromContent("pasejo-frame", { tab: { id: 7 }, frameId: 0 });
       expect(api.__streamPairs.at(-1).backgroundPort.disconnect).toHaveBeenCalled();
+    });
+  });
+
+  describe("fillAcrossFrames: credential release", () => {
+    it("fills the credential the reveal released, not anything from the match", async () => {
+      const { api, popup } = await setUp();
+      const filled = stubFrames(api, [
+        { frameId: 0, fill: { ok: true, filled: { password: true } } },
+      ]);
+      const reply = await popup.fillAcrossFrames(
+        PAGE,
+        revealAs({ ...CREDENTIAL, otp: "123456" }),
+        allowAll,
+      );
+      expect(api.__fillMessages).toEqual([
+        { type: "fill", username: "alice", password: "hunter2", otp: "123456" },
+      ]);
+      expect(reply.credential.otp).toBe("123456");
+    });
+
+    it("reveals once, however many frames it tries", async () => {
+      const { api, popup } = await setUp();
+      stubFrames(api, [
+        { frameId: 0, fill: { ok: false } },
+        { frameId: 1, fill: { ok: false } },
+        { frameId: 2, fill: { ok: true } },
+      ]);
+      const reveal = revealAs();
+      await popup.fillAcrossFrames(PAGE, reveal, allowAll);
+      expect(reveal).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports the released credential when every frame refused the fill", async () => {
+      const { api, popup } = await setUp();
+      stubFrames(api, [{ frameId: 0, fill: { ok: false } }]);
+      const reply = await popup.fillAcrossFrames(PAGE, revealAs(), allowAll);
+      expect(reply).toEqual({ ok: false, refused: 0, credential: CREDENTIAL });
+    });
+
+    it("does not reveal when the browser refuses the injection", async () => {
+      const { api, popup } = await setUp();
+      api.scripting.executeScript = vi.fn().mockRejectedValue(new Error("no"));
+      const reveal = revealAs();
+      await popup.fillAcrossFrames(PAGE, reveal, allowAll);
+      expect(reveal).not.toHaveBeenCalled();
+    });
+
+    it("does not reveal when the top frame shows another origin", async () => {
+      const { api, popup } = await setUp();
+      stubFrames(api, [{ frameId: 0, url: "https://evil.test/", fill: { ok: true } }]);
+      const reveal = revealAs();
+      const reply = await popup.fillAcrossFrames(PAGE, reveal, allowAll);
+      expect(reply).toEqual({ ok: false, pageChanged: true });
+      expect(reveal).not.toHaveBeenCalled();
+    });
+
+    it("does not reveal when no frame may receive the credential", async () => {
+      const { api, popup } = await setUp();
+      const filled = stubFrames(api, [{ frameId: 0, fill: { ok: true } }]);
+      const reveal = revealAs();
+      const reply = await popup.fillAcrossFrames(PAGE, reveal, async () => false);
+      expect(reply).toEqual({ ok: false, refused: 1 });
+      expect(reveal).not.toHaveBeenCalled();
+      expect(filled).toEqual([]);
+    });
+
+    it("stops without filling when the reveal fails", async () => {
+      const { api, popup } = await setUp();
+      const filled = stubFrames(api, [{ frameId: 0, fill: { ok: true } }]);
+      const failure = { hostError: { error: "not_matched", store: "personal" } };
+      const reply = await popup.fillAcrossFrames(
+        PAGE,
+        vi.fn(async () => failure),
+        allowAll,
+      );
+      expect(reply).toEqual({ ok: false, revealFailure: failure });
+      expect(filled).toEqual([]);
+    });
+
+    it("skips a frame that went away while the reveal was pending", async () => {
+      const { api, popup } = await setUp();
+      const filled = stubFrames(api, [
+        { frameId: 0, fill: { ok: true } },
+        { frameId: 1, fill: { ok: true } },
+      ]);
+      const reveal = vi.fn(async () => {
+        // The top frame navigates while the host decrypts.
+        api.__streamPairs
+          .find((pair) => pair.backgroundPort.sender?.frameId === 0)
+          .popupPort.disconnect();
+        return { credential: CREDENTIAL };
+      });
+      const reply = await popup.fillAcrossFrames(PAGE, reveal, allowAll);
+      expect(reply.ok).toBe(true);
+      expect(filled).toEqual([1]);
+    });
+  });
+
+  describe("fillIntoActiveTab: release at click time", () => {
+    const match = Object.freeze({
+      name: "example.com/alice",
+      store: "personal",
+      username: "alice",
+      url: "https://example.com/login",
+      match_kind: "url_field",
+      score: 1,
+    });
+
+    it("asks the host to reveal the picked secret for the page's host", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api);
+      const filled = stubFrames(api, [
+        { frameId: 0, fill: { ok: true, filled: { username: true, password: true } } },
+      ]);
+      await popup.fillIntoActiveTab(match);
+      expect(revealRequests(api)).toEqual([
+        {
+          type: "reveal",
+          store: "personal",
+          name: "example.com/alice",
+          domain: "example.com",
+        },
+      ]);
+      expect(api.__fillMessages[0].password).toBe("hunter2");
+      expect(popup.elements.status.textContent).toBe("Filled example.com/alice.");
+    });
+
+    it("never reveals while listing matches", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api, { results: { "example.com": [match] } });
+      popup.state.domain = "example.com";
+      popup.state.store = "personal";
+      await popup.runQuery();
+      expect(popup.elements.results.children).toHaveLength(1);
+      expect(revealRequests(api)).toEqual([]);
+    });
+
+    it("does not reveal when the tab changed since the popup opened", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api);
+      api.tabs.query.mockResolvedValueOnce([{ id: 7, url: "https://evil.test/" }]);
+      await popup.fillIntoActiveTab(match);
+      expect(revealRequests(api)).toEqual([]);
+    });
+
+    it("renders the host's refusal and fills nothing", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api, { reveal: { error: "not_matched", store: "personal" } });
+      const filled = stubFrames(api, [{ frameId: 0, fill: { ok: true } }]);
+      await popup.fillIntoActiveTab(match);
+      expect(filled).toEqual([]);
+      expect(popup.elements.status.textContent).toBe(
+        "The host did not release this credential for this site. Refresh and pick the match again.",
+      );
+      expect(popup.elements.status.classList.contains("error")).toBe(true);
+      expect(popup.state.filling).toBe(false);
+    });
+
+    it("renders the host error a locked identity produces on reveal", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api, {
+        reveal: { error: "identity_locked", store: "personal", hint: "no key" },
+      });
+      stubFrames(api, [{ frameId: 0, fill: { ok: true } }]);
+      await popup.fillIntoActiveTab(match);
+      expect(popup.elements.status.textContent).toMatch(/^Could not decrypt/);
+    });
+
+    it("reports a reveal that never reached the host", async () => {
+      const { api, popup } = await setUp();
+      api.runtime.sendMessage = vi
+        .fn()
+        .mockResolvedValue({ ok: false, error: "host gone" });
+      const filled = stubFrames(api, [{ frameId: 0, fill: { ok: true } }]);
+      await popup.fillIntoActiveTab(match);
+      expect(filled).toEqual([]);
+      expect(popup.elements.status.textContent).toMatch(/host gone/);
+      expect(popup.state.filling).toBe(false);
+    });
+
+    it("treats a reveal reply without a credential as undecodable", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api, { reveal: { results: [] } });
+      const filled = stubFrames(api, [{ frameId: 0, fill: { ok: true } }]);
+      await popup.fillIntoActiveTab(match);
+      expect(filled).toEqual([]);
+      expect(popup.elements.status.textContent).toMatch(/could not decode/);
+    });
+
+    it("shows the released code on the row and keeps the popup open when the page took none", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api, {
+        reveal: (message) => ({
+          credential: { ...CREDENTIAL, name: message.name, otp: "123456" },
+        }),
+      });
+      stubFrames(api, [
+        { frameId: 0, fill: { ok: true, filled: { username: true, password: true, otp: false } } },
+      ]);
+      const close = vi.spyOn(window, "close").mockImplementation(() => {});
+      const row = popup.renderMatch(match);
+      popup.elements.results.appendChild(row);
+      expect(row.querySelector(".otp")).toBeNull();
+      vi.useFakeTimers();
+      const done = popup.fillIntoActiveTab(match, row);
+      await vi.runAllTimersAsync();
+      await done;
+      expect(row.querySelector(".otp").textContent).toBe("OTP: 123456");
+      expect(popup.elements.status.textContent).toBe(
+        "Filled example.com/alice. Its one-time code is shown below.",
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(close).not.toHaveBeenCalled();
+      expect(popup.state.filling).toBe(false);
+    });
+
+    it("replaces the code a previous fill showed instead of adding a second one", async () => {
+      const { api, popup } = await setUp();
+      let code = 111111;
+      stubHost(api, {
+        reveal: () => ({ credential: { ...CREDENTIAL, otp: String(code++) } }),
+      });
+      stubFrames(api, [{ frameId: 0, fill: { ok: true, filled: { password: true } } }]);
+      vi.spyOn(window, "close").mockImplementation(() => {});
+      const row = popup.renderMatch(match);
+      await popup.fillIntoActiveTab(match, row);
+      await popup.fillIntoActiveTab(match, row);
+      const codes = Array.from(row.querySelectorAll(".otp")).map(
+        (el) => el.textContent,
+      );
+      expect(codes).toEqual(["OTP: 111112"]);
+    });
+
+    it("shows the released code when the fill found no field at all", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api, {
+        reveal: () => ({ credential: { ...CREDENTIAL, otp: "654321" } }),
+      });
+      stubFrames(api, [{ frameId: 0, fill: { ok: false } }]);
+      const row = popup.renderMatch(match);
+      await popup.fillIntoActiveTab(match, row);
+      expect(row.querySelector(".otp").textContent).toBe("OTP: 654321");
+      expect(popup.elements.status.textContent).toBe(
+        "No frame on the page had a fillable password input. Its one-time code is shown below.",
+      );
+    });
+
+    it("does not show a code the page already received", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api, {
+        reveal: () => ({ credential: { ...CREDENTIAL, otp: "123456" } }),
+      });
+      stubFrames(api, [
+        { frameId: 0, fill: { ok: true, filled: { username: true, password: true, otp: true } } },
+      ]);
+      const close = vi.spyOn(window, "close").mockImplementation(() => {});
+      const row = popup.renderMatch(match);
+      vi.useFakeTimers();
+      const done = popup.fillIntoActiveTab(match, row);
+      await vi.runAllTimersAsync();
+      await done;
+      expect(row.querySelector(".otp")).toBeNull();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(close).toHaveBeenCalled();
+    });
+
+    it("shows no code when the fill was not started from a row", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api, {
+        reveal: () => ({ credential: { ...CREDENTIAL, otp: "123456" } }),
+      });
+      stubFrames(api, [{ frameId: 0, fill: { ok: true, filled: { password: true } } }]);
+      vi.spyOn(window, "close").mockImplementation(() => {});
+      await popup.fillIntoActiveTab(match);
+      expect(popup.elements.status.textContent).toBe("Filled example.com/alice.");
+    });
+
+    it("passes the row to the fill when the row is clicked", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api, {
+        reveal: () => ({ credential: { ...CREDENTIAL, otp: "123456" } }),
+      });
+      stubFrames(api, [{ frameId: 0, fill: { ok: false } }]);
+      const row = popup.renderMatch(match);
+      popup.elements.results.appendChild(row);
+      row.click();
+      await flushAsync();
+      await flushAsync();
+      expect(row.querySelector(".otp").textContent).toBe("OTP: 123456");
     });
   });
 
@@ -3124,11 +3474,7 @@ describe("popup.js", () => {
         { id: 7, url: "https://example.com/login" },
       ]);
       stubFrames(api, [{ frameId: 0, fill: { ok: true, filled: { username: true, password: true } } }]);
-      await popup.fillIntoActiveTab({
-        name: "alice",
-        username: "alice",
-        password: "p",
-      });
+      await popup.fillIntoActiveTab({ name: "alice", username: "alice" });
       expect(popup.elements.status.textContent).toBe("Filled alice.");
     });
 
@@ -3138,12 +3484,7 @@ describe("popup.js", () => {
         { id: 7, url: "https://example.com/login" },
       ]);
       stubFrames(api, [{ frameId: 0, fill: { ok: true, filled: { username: true, password: true, otp: true } } }]);
-      await popup.fillIntoActiveTab({
-        name: "alice",
-        username: "alice",
-        password: "p",
-        otp: "123456",
-      });
+      await popup.fillIntoActiveTab({ name: "alice", username: "alice" });
       expect(popup.elements.status.textContent).toBe(
         "Filled alice and its one-time code.",
       );
@@ -3158,11 +3499,7 @@ describe("popup.js", () => {
             ok: true,
             filled: { username: true, password: false, otp: true },
           } }]);
-      await popup.fillIntoActiveTab({
-        name: "alice",
-        username: "alice",
-        otp: "123456",
-      });
+      await popup.fillIntoActiveTab({ name: "alice", username: "alice" });
       expect(popup.elements.status.textContent).toMatch(
         /Filled username and its one-time code for alice/,
       );
@@ -3178,7 +3515,7 @@ describe("popup.js", () => {
             ok: true,
             filled: { username: false, password: false, otp: true },
           } }]);
-      await popup.fillIntoActiveTab({ name: "alice", otp: "123456" });
+      await popup.fillIntoActiveTab({ name: "alice" });
       expect(popup.elements.status.textContent).toBe(
         "Filled the one-time code for alice.",
       );
@@ -3420,16 +3757,12 @@ describe("popup.js", () => {
       name: "example.com/alice",
       store: "personal",
       username: "alice",
-      password: "hunter2",
       url: "https://example.com/login",
     });
 
     it("never sends the credential to a cross-origin iframe the secret does not match, on a legitimate page", async () => {
       const { api, popup } = await setUp();
-      api.runtime.sendMessage = vi.fn(async () => ({
-        ok: true,
-        response: { results: [] },
-      }));
+      stubHost(api);
       // The legitimate top frame has no login form; an embedded frame
       // from another site does, and would happily take a password.
       const filled = stubFrames(api, [
@@ -3456,10 +3789,7 @@ describe("popup.js", () => {
 
     it("judges a frame by its browser-reported origin, not its URL", async () => {
       const { api, popup } = await setUp();
-      api.runtime.sendMessage = vi.fn(async () => ({
-        ok: true,
-        response: { results: [] },
-      }));
+      stubHost(api);
       // An about:blank frame the attacker origin created reports its
       // inherited origin, which is what counts.
       const filled = stubFrames(api, [
@@ -3482,12 +3812,11 @@ describe("popup.js", () => {
 
     it("fills a same-site SSO iframe the host confirms for the secret", async () => {
       const { api, popup } = await setUp();
-      api.runtime.sendMessage = vi.fn(async () => ({
-        ok: true,
-        response: {
-          results: [{ name: "example.com/alice", store: "personal" }],
+      stubHost(api, {
+        results: {
+          "sso.example.com": [{ name: "example.com/alice", store: "personal" }],
         },
-      }));
+      });
       const filled = stubFrames(api, [
         { frameId: 0, url: "https://example.com/login", fill: { ok: false } },
         {
@@ -3567,7 +3896,7 @@ describe("popup.js", () => {
         .mockResolvedValueOnce({
           ok: true,
           response: {
-            protocol_version: 1,
+            protocol_version: 2,
             stores: [
               { name: "personal", default: true },
               { name: "work", default: false },
@@ -3635,7 +3964,7 @@ describe("popup.js", () => {
         .mockResolvedValueOnce({
           ok: true,
           response: {
-            protocol_version: 1,
+            protocol_version: 2,
             stores: [{ name: "personal", default: true }],
           },
         })
@@ -3681,7 +4010,7 @@ describe("popup.js", () => {
       loadStoresDeferred.resolve({
         ok: true,
         response: {
-          protocol_version: 1,
+          protocol_version: 2,
           stores: [
             { name: "a", default: true },
             { name: "b", default: false },
@@ -3719,7 +4048,7 @@ describe("popup.js", () => {
         .mockResolvedValueOnce({
           ok: true,
           response: {
-            protocol_version: 1,
+            protocol_version: 2,
             stores: [
               { name: "personal", default: true },
               { name: "work", default: false },
@@ -3759,7 +4088,7 @@ describe("popup.js", () => {
       loadStoresDeferred.resolve({
         ok: true,
         response: {
-          protocol_version: 1,
+          protocol_version: 2,
           stores: [
             { name: "a", default: true },
             { name: "b", default: false },
@@ -3806,7 +4135,7 @@ describe("popup.js", () => {
       api.runtime.sendMessage = vi.fn().mockResolvedValue({
         ok: true,
         response: {
-          protocol_version: 1,
+          protocol_version: 2,
           stores: [{ name: "personal", default: true }],
           results: [],
         },
@@ -3859,7 +4188,7 @@ describe("popup.js", () => {
       api.runtime.sendMessage = vi.fn().mockResolvedValue({
         ok: true,
         response: {
-          protocol_version: 1,
+          protocol_version: 2,
           stores: [{ name: "personal", default: true }],
           results: [],
         },
@@ -3944,7 +4273,7 @@ describe("popup.js", () => {
         .mockResolvedValueOnce({
           ok: true,
           response: {
-            protocol_version: 1,
+            protocol_version: 2,
             stores: [{ name: "personal", default: true }],
           },
         })

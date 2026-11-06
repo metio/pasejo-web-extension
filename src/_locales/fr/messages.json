@@ -210,6 +210,10 @@
     "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
     "placeholders": { "name": { "content": "$1" } }
   },
+  "statusOtpShownSuffix": {
+    "message": " Son code à usage unique est affiché ci-dessous.",
+    "description": "Appended to a fill status when the released one-time code was not filled and is shown on the result row instead."
+  },
   "errorUnknownStore": {
     "message": "Le coffre sélectionné n'existe pas dans votre configuration pasejo.",
     "description": "Host error: the requested store is not configured."
@@ -237,5 +241,9 @@
   "errorResponseTooLarge": {
     "message": "La réponse pour ce coffre était trop volumineuse pour la limite de messagerie native du navigateur. Réduisez les corps de secrets très volumineux ou affinez la correspondance.",
     "description": "Host error: the reply exceeded the native-messaging size limit."
+  },
+  "errorNotMatched": {
+    "message": "L'hôte n'a pas libéré cet identifiant pour ce site. Actualisez et choisissez de nouveau la correspondance.",
+    "description": "Host error: the host refused to release the picked credential for the page's site."
   }
 }

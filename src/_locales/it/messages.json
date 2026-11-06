@@ -210,6 +210,10 @@
     "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
     "placeholders": { "name": { "content": "$1" } }
   },
+  "statusOtpShownSuffix": {
+    "message": " Il codice monouso è mostrato qui sotto.",
+    "description": "Appended to a fill status when the released one-time code was not filled and is shown on the result row instead."
+  },
   "errorUnknownStore": {
     "message": "L'archivio selezionato non esiste nella tua configurazione di pasejo.",
     "description": "Host error: the requested store is not configured."
@@ -237,5 +241,9 @@
   "errorResponseTooLarge": {
     "message": "La risposta per questo archivio era troppo grande per il limite di messaggistica nativa del browser. Riduci i corpi dei segreti molto grandi o restringi la corrispondenza.",
     "description": "Host error: the reply exceeded the native-messaging size limit."
+  },
+  "errorNotMatched": {
+    "message": "L'host non ha rilasciato questa credenziale per questo sito. Aggiorna e scegli di nuovo la corrispondenza.",
+    "description": "Host error: the host refused to release the picked credential for the page's site."
   }
 }

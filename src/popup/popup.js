@@ -41,8 +41,9 @@ const state = {
   // outcome of the one call that did check.
   protocolOk: false,
   // Guard against a double-click on a result row sending two fill
-  // requests. Cleared on failure paths; the success path leaves it
-  // `true` until the popup closes itself.
+  // requests. Cleared on failure paths and when a fill leaves a code on
+  // the row for the user to read; a success that closes the popup
+  // leaves it `true` until the popup is gone.
   filling: false,
   // Guard against a rapid second Refresh click sneaking in before
   // `disabled = true` takes effect on the in-flight click. A queued
@@ -807,7 +808,7 @@ function renderMatch(match) {
   item.tabIndex = 0;
   item.setAttribute("role", "button");
   item.setAttribute("aria-label", t("fillRowAriaLabel", match.name));
-  item.addEventListener("click", () => fillIntoActiveTab(match));
+  item.addEventListener("click", () => fillIntoActiveTab(match, item));
   item.addEventListener("keydown", (event) => {
     // Pressing Enter/Space on the inner Fill button generates a
     // keydown that bubbles up to this listener with `target` set to
@@ -821,7 +822,7 @@ function renderMatch(match) {
     }
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      fillIntoActiveTab(match);
+      fillIntoActiveTab(match, item);
     }
   });
 
@@ -840,7 +841,9 @@ function renderMatch(match) {
 
   const actions = document.createElement("div");
   actions.className = "actions";
-  actions.appendChild(button(t("fillButton"), () => fillIntoActiveTab(match)));
+  actions.appendChild(
+    button(t("fillButton"), () => fillIntoActiveTab(match, item)),
+  );
   item.appendChild(actions);
 
   const secondary = document.createElement("div");
@@ -849,12 +852,6 @@ function renderMatch(match) {
     const user = document.createElement("span");
     user.textContent = match.username;
     secondary.appendChild(user);
-  }
-  if (match.otp) {
-    const otp = document.createElement("span");
-    otp.className = "otp";
-    otp.textContent = t("otpLabel", match.otp);
-    secondary.appendChild(otp);
   }
   if (match.store) {
     const store = document.createElement("span");
@@ -877,7 +874,61 @@ function button(label, handler) {
   return btn;
 }
 
-async function fillIntoActiveTab(match) {
+// Shows the one-time code a reveal released on `row` when the fill did
+// not place it in the page, replacing a code an earlier fill showed.
+// Returns whether a code is shown.
+function showRevealedOtp(row, credential, filled) {
+  if (!row || !credential?.otp || filled?.otp) {
+    return false;
+  }
+  const secondary = row.querySelector(".row-secondary");
+  secondary.querySelector(".otp")?.remove();
+  const otp = document.createElement("span");
+  otp.className = "otp";
+  otp.textContent = t("otpLabel", credential.otp);
+  secondary.appendChild(otp);
+  return true;
+}
+
+// Asks the host to release `match`'s credential for the page the popup
+// opened on. The host decrypts the store again and re-runs its matcher
+// for `page.hostname`, so a secret that does not match the page is
+// refused there. Resolves `{credential}`, `{hostError}` with the host's
+// error envelope, or `{transportError}` with a message.
+async function revealCredential(match, page) {
+  let reply;
+  try {
+    reply = await sendBackground({
+      type: "reveal",
+      store: match.store,
+      name: match.name,
+      domain: page.hostname,
+    });
+  } catch (err) {
+    return { transportError: err.message };
+  }
+  if (reply.error) {
+    return { hostError: reply };
+  }
+  if (!reply.credential || typeof reply.credential !== "object") {
+    return { hostError: { error: "decode_error" } };
+  }
+  return { credential: reply.credential };
+}
+
+// The message a frame fills from: the released credential only.
+function fillMessage(credential) {
+  return {
+    type: "fill",
+    username: credential.username,
+    password: credential.password,
+    // Undefined when the host released no code; the content script
+    // treats a missing/empty code as "nothing to fill".
+    otp: credential.otp,
+  };
+}
+
+async function fillIntoActiveTab(match, row) {
   // Double-click guard: clicking the row twice would otherwise send two
   // fan-outs and race the 600 ms popup close. The flag is set BEFORE
   // any async work so a queued second click bails immediately, not
@@ -901,18 +952,26 @@ async function fillIntoActiveTab(match) {
     state.filling = false;
     return;
   }
-  const payload = {
-    type: "fill",
-    username: match.username,
-    password: match.password,
-    // Undefined when the match has no OTP; the content script treats a
-    // missing/empty code as "nothing to fill".
-    otp: match.otp,
-  };
+  const page = state.page;
   const lookups = new Map();
-  const reply = await fillAcrossFrames(state.page, payload, (frame) =>
-    frameMatchesCredential(frame, match, state.page, lookups),
+  const reply = await fillAcrossFrames(
+    page,
+    () => revealCredential(match, page),
+    (frame) => frameMatchesCredential(frame, match, page, lookups),
   );
+  if (reply.revealFailure) {
+    const failure = reply.revealFailure;
+    if (failure.hostError) {
+      renderHostError(failure.hostError);
+    } else {
+      setStatus(t("statusHostUnreachable", failure.transportError), "error");
+    }
+    state.filling = false;
+    return;
+  }
+  const otpSuffix = showRevealedOtp(row, reply.credential, reply.filled)
+    ? t("statusOtpShownSuffix")
+    : "";
   if (reply.ok) {
     // Partial fill: the matching frame had a username field but no
     // password field (typical multi-step login email page). Tell the
@@ -939,6 +998,13 @@ async function fillIntoActiveTab(match) {
         ? t("statusFilledOtp", match.name)
         : t("statusFilled", match.name);
     }
+    if (otpSuffix) {
+      // The user still needs the code shown on the row, so the popup
+      // stays open and usable.
+      setStatus(`${message}${otpSuffix}`);
+      state.filling = false;
+      return;
+    }
     setStatus(message);
     // Give the user a moment to read the success line before the popup
     // disappears. Without the delay the status flashes too briefly to
@@ -961,12 +1027,13 @@ async function fillIntoActiveTab(match) {
   } else if (reply.refused) {
     failure = "statusFillRefusedOtherSite";
   }
-  setStatus(t(failure, match.name), "error");
+  setStatus(`${t(failure, match.name)}${otpSuffix}`, "error");
   // Failure path: re-enable so the user can try a different match.
   state.filling = false;
 }
 
-// Fills `payload` into the tab `page` recorded. The fill script is
+// Fills the credential `reveal` releases into the tab `page` recorded.
+// The fill script is
 // injected only now, into every frame the browser lets the extension
 // reach — opening the popup granted `activeTab` for the tab's page, and
 // the manifest asks for no standing host access. The walk goes:
@@ -987,12 +1054,16 @@ async function fillIntoActiveTab(match) {
 //    fill every form that has a password input, including unrelated
 //    change-password iframes and any malicious iframe injected into the
 //    page.
+// 5. `reveal` runs once, right before the first frame that may receive
+//    the credential gets it, so nothing is released for a page the fill
+//    cannot reach. A frame that went away during the reveal is skipped.
 //
 // Resolves `{ok:false}` plus `noAccess` when the browser refused the
 // injection outright (a browser-internal page, an add-on store),
-// `pageChanged` for step 2, or `refused` with the number of frames
-// `isFrameAllowed` rejected.
-async function fillAcrossFrames(page, payload, isFrameAllowed) {
+// `pageChanged` for step 2, `revealFailure` with the failed reveal's
+// outcome, or `refused` with the number of frames `isFrameAllowed`
+// rejected. Once a reveal succeeded, the reply carries its `credential`.
+async function fillAcrossFrames(page, reveal, isFrameAllowed) {
   const collector = createFrameCollector(page.tabId);
   frameCollector = collector;
   try {
@@ -1006,17 +1077,28 @@ async function fillAcrossFrames(page, payload, isFrameAllowed) {
       return { ok: false, pageChanged: true };
     }
     let refused = 0;
+    let credential;
     for (const frame of orderFramesForFill(frames)) {
       if (!(await isFrameAllowed(frame))) {
         refused += 1;
         continue;
       }
-      const reply = await requestFill(frame, payload);
+      if (credential === undefined) {
+        const outcome = await reveal();
+        if (!outcome.credential) {
+          return { ok: false, revealFailure: outcome };
+        }
+        credential = outcome.credential;
+      }
+      if (frame.disconnected) {
+        continue;
+      }
+      const reply = await requestFill(frame, fillMessage(credential));
       if (reply.ok) {
-        return reply;
+        return { ...reply, credential };
       }
     }
-    return { ok: false, refused };
+    return { ok: false, refused, credential };
   } finally {
     if (frameCollector === collector) {
       frameCollector = null;

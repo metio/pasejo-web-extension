@@ -210,6 +210,10 @@
     "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
     "placeholders": { "name": { "content": "$1" } }
   },
+  "statusOtpShownSuffix": {
+    "message": " 一次性代码显示在下方。",
+    "description": "Appended to a fill status when the released one-time code was not filled and is shown on the result row instead."
+  },
   "errorUnknownStore": {
     "message": "所选存储在您的 pasejo 配置中不存在。",
     "description": "Host error: the requested store is not configured."
@@ -237,5 +241,9 @@
   "errorResponseTooLarge": {
     "message": "此存储的回复超出了浏览器原生消息传递的大小限制。请精简过大的密文内容或缩小匹配范围。",
     "description": "Host error: the reply exceeded the native-messaging size limit."
+  },
+  "errorNotMatched": {
+    "message": "主机未针对此网站发放该凭据。请刷新后重新选择匹配项。",
+    "description": "Host error: the host refused to release the picked credential for the page's site."
   }
 }

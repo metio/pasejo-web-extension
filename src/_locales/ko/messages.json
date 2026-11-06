@@ -210,6 +210,10 @@
     "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
     "placeholders": { "name": { "content": "$1" } }
   },
+  "statusOtpShownSuffix": {
+    "message": " 일회용 코드는 아래에 표시됩니다.",
+    "description": "Appended to a fill status when the released one-time code was not filled and is shown on the result row instead."
+  },
   "errorUnknownStore": {
     "message": "선택한 저장소가 pasejo 구성에 존재하지 않습니다.",
     "description": "Host error: the requested store is not configured."
@@ -237,5 +241,9 @@
   "errorResponseTooLarge": {
     "message": "이 저장소의 응답이 브라우저의 네이티브 메시징 한도에 비해 너무 큽니다. 매우 큰 비밀 본문을 줄이거나 일치 범위를 좁히세요.",
     "description": "Host error: the reply exceeded the native-messaging size limit."
+  },
+  "errorNotMatched": {
+    "message": "호스트가 이 사이트에 대해 이 자격 증명을 공개하지 않았습니다. 새로 고친 뒤 일치 항목을 다시 선택하세요.",
+    "description": "Host error: the host refused to release the picked credential for the page's site."
   }
 }

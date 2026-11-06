@@ -210,6 +210,10 @@
     "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
     "placeholders": { "name": { "content": "$1" } }
   },
+  "statusOtpShownSuffix": {
+    "message": " Su código de un solo uso se muestra abajo.",
+    "description": "Appended to a fill status when the released one-time code was not filled and is shown on the result row instead."
+  },
   "errorUnknownStore": {
     "message": "El almacén seleccionado no existe en su configuración de pasejo.",
     "description": "Host error: the requested store is not configured."
@@ -237,5 +241,9 @@
   "errorResponseTooLarge": {
     "message": "La respuesta para este almacén era demasiado grande para el límite de mensajería nativa del navegador. Reduzca los cuerpos de secretos muy grandes o acote la coincidencia.",
     "description": "Host error: the reply exceeded the native-messaging size limit."
+  },
+  "errorNotMatched": {
+    "message": "El host no liberó esta credencial para este sitio. Actualice y vuelva a elegir la coincidencia.",
+    "description": "Host error: the host refused to release the picked credential for the page's site."
   }
 }

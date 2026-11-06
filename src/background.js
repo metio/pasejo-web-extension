@@ -117,6 +117,26 @@ const ACTION_VALIDATORS = {
       throw new Error("`results` is not an array");
     }
   },
+  // A reveal is the one reply that carries a password, so it is the one
+  // reply whose credential the popup must be able to fill as-is.
+  [ACTION.Reveal](response) {
+    const credential = response.credential;
+    if (
+      !credential ||
+      typeof credential !== "object" ||
+      Array.isArray(credential)
+    ) {
+      throw new Error("`credential` is not an object");
+    }
+    for (const field of ["name", "store", "username", "password"]) {
+      if (typeof credential[field] !== "string") {
+        throw new Error(`\`credential.${field}\` is not a string`);
+      }
+    }
+    if (credential.otp !== undefined && typeof credential.otp !== "string") {
+      throw new Error("`credential.otp` is not a string");
+    }
+  },
 };
 
 // Enforces the per-action response schema at the IPC boundary so the
@@ -126,8 +146,8 @@ const ACTION_VALIDATORS = {
 // host can reply with an error to any request and that path is
 // handled by the popup's `renderHostError`. Unknown action tokens
 // fall through unchecked — the dispatch surface above is the
-// trust boundary: every callsite uses `ACTION.Query` or
-// `ACTION.ListStores` literals, so an action without a registered
+// trust boundary: every callsite uses an `ACTION.*` literal that has
+// a validator below, so an action without a registered
 // validator can only appear after a deliberate code change that
 // will surface in review. The popup keeps its own `Array.isArray`
 // guards as belt-and-braces; they're effectively unreachable when
@@ -461,6 +481,19 @@ api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         action: ACTION.Query,
         domain: message.domain,
         store: message.store ?? null,
+      })
+        .then((response) => sendResponse({ ok: true, response }))
+        .catch((err) => sendResponse({ ok: false, error: err.message }));
+      return true;
+    }
+    case "reveal": {
+      // Only the three fields the host re-checks are forwarded: the host
+      // releases the credential when `name` in `store` matches `domain`.
+      sendNativeRequest({
+        action: ACTION.Reveal,
+        store: message.store,
+        name: message.name,
+        domain: message.domain,
       })
         .then((response) => sendResponse({ ok: true, response }))
         .catch((err) => sendResponse({ ok: false, error: err.message }));

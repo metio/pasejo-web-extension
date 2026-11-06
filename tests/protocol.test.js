@@ -24,7 +24,7 @@ describe("protocol.js", () => {
     expect(globalThis.PASEJO).toBeDefined();
     expect(Object.isFrozen(globalThis.PASEJO)).toBe(true);
     expect(globalThis.PASEJO.NATIVE_HOST).toBe("wtf.metio.pasejo");
-    expect(globalThis.PASEJO.PROTOCOL_VERSION).toBe(1);
+    expect(globalThis.PASEJO.PROTOCOL_VERSION).toBe(2);
     // Range-based negotiation (PROTOCOL_MIN/PROTOCOL_MAX) and the
     // dispatch threshold (MULTI_STORE_MIN_VERSION) were removed when
     // we collapsed to a single supported version — fail loudly if
@@ -40,6 +40,7 @@ describe("protocol.js", () => {
     expect(globalThis.PASEJO.ACTION).toEqual({
       Query: "query",
       ListStores: "list_stores",
+      Reveal: "reveal",
     });
   });
 
@@ -55,6 +56,7 @@ describe("protocol.js", () => {
       StoreUnreachable: "store_unreachable",
       NoStoreConfigured: "no_store_configured",
       ResponseTooLarge: "response_too_large",
+      NotMatched: "not_matched",
     });
   });
 

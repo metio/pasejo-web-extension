@@ -210,6 +210,10 @@
     "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
     "placeholders": { "name": { "content": "$1" } }
   },
+  "statusOtpShownSuffix": {
+    "message": " Its one-time code is shown below.",
+    "description": "Appended to a fill status when the released one-time code was not filled and is shown on the result row instead."
+  },
   "errorUnknownStore": {
     "message": "The selected store does not exist in your pasejo configuration.",
     "description": "Host error: the requested store is not configured."
@@ -237,5 +241,9 @@
   "errorResponseTooLarge": {
     "message": "The reply for this store was too large for the browser's native-messaging limit. Trim very large secret bodies or narrow the match.",
     "description": "Host error: the reply exceeded the native-messaging size limit."
+  },
+  "errorNotMatched": {
+    "message": "The host did not release this credential for this site. Refresh and pick the match again.",
+    "description": "Host error: the host refused to release the picked credential for the page's site."
   }
 }
