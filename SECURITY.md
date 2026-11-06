@@ -111,6 +111,13 @@ a known property of the design, not a vulnerability.
   and by rebuilding it. Store copies carry the stores' own signatures
   and are compared by content. The README's *Verifying a release*
   section has the commands.
+* **The fill rules are checked against a model.** A Quint model in
+  `model/` states the rules above about frames, origins, clicks,
+  confirmation, policies and the multi-store stream as invariants.
+  Random simulation and a bounded Apalache check test the model, and the
+  unit suite replays its traces against the shipped popup and background
+  scripts. The model abstracts the fill script and the host; the
+  README's *Formal model* section lists what it leaves out.
 
 ## Accepted boundaries
 

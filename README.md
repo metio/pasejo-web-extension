@@ -441,6 +441,107 @@ export PASEJO_BIN="$(command -v pasejo)"
 PASEJO_CONFIG="$(e2e/bootstrap-store.sh "$(mktemp -d)")" npm run test:e2e
 ```
 
+## Formal model
+
+`model/` holds a [Quint](https://quint.sh) model of the extension's
+security-relevant behaviour. `tests/model-replay.test.js` replays traces
+of the model against the shipped popup and background scripts on every
+`npm test`, so a change to either side that the other does not follow
+fails the suite.
+
+* `model/web.qnt`: origins as the browser reports them, the frames of
+  the page's tab, and the `activeTab` grant for one tab and origin, which
+  a navigation to another origin revokes. It has no notion of
+  credentials, so a later module (WebAuthn, for one) can import it.
+* `model/host.qnt`: two stores, the per-secret fill policy, the host's
+  matcher, and what `query` and `reveal` return.
+* `model/extension.qnt`: the popup and the background as one state
+  machine, and the invariants. A step is one event the extension does
+  not control: a click, a host reply, a navigation, a timer. Between two
+  events the code runs until it waits on the host again, and each
+  transition computes that whole run.
+* `model/extension_test.qnt`: scenarios for `quint test`.
+* `model/scenarios.qnt`: situations worth reaching (a fill into an
+  iframe, a reveal the host refuses at click time, an abandoned stream,
+  …), counted by the simulation and used to pick replay traces.
+
+The invariants:
+
+* A credential reaches only a frame of the page's tab whose
+  browser-reported origin the secret names under the host's rule, and
+  never a frame its `pasejo-fill` policy rules out.
+* A credential reaches a frame only while the tab still shows the origin
+  the popup opened on, the `activeTab` grant covers it, and the frame
+  still holds the port its fill script opened.
+* The host releases a credential only after the user picked that secret
+  in the same popup session, and only for the page that popup opened on.
+* A `pasejo-confirm` secret is released only after its prompt was
+  confirmed, and the prompt ignores clicks until it is armed.
+* A `pasejo-fill: never` secret is never released, and a TOTP code only
+  for an exact-host match.
+* A multi-store stream posts each reply under the slot of the request id
+  it answers, each slot once, and `done` last. An open stream has a
+  pending slot whose timer ends it; an ended stream's native connection
+  is closed.
+* The popup lists only secrets the host returned for its current query,
+  and nothing once it is closed.
+
+```sh
+npm run model:test       # quint test: the scenarios in model/extension_test.qnt
+npm run model:simulate   # 20 000 random runs of 40 steps; every invariant checked, scenario counts reported
+npm run model:replay     # the replay suite alone (npm test runs it too)
+npm run model:verify     # Apalache bounded model check of every invariant, 4 steps deep
+```
+
+`model:verify` needs a Java runtime on `PATH` (checked with Temurin 25).
+Quint downloads Apalache on first use, runs it as a local server on port
+8822 and writes `_apalache-out/` and `tmp/` into the working directory.
+A fill is 4 steps from the initial state (open the popup, the list
+arrives, click, the reveal arrives), so the check covers every path up
+to the shortest fill. It took just under ten minutes on a developer
+laptop, and a 6-step run did not finish within 15 minutes, so longer
+paths are left to the simulation and the replay.
+
+The replay suite asks `quint run` for one trace per situation in
+`model/scenarios.qnt` (each run stops at the first state that reaches
+it) and for 60 random runs, all from a fixed seed, and caches the traces
+in `node_modules/.cache/pasejo-model/` keyed by the model, the seed and
+the Quint version. Quint fetches its Rust evaluator from GitHub on first
+use; `PASEJO_MODEL_BACKEND=typescript` uses the slower built-in evaluator
+instead. `PASEJO_MODEL_SEED` and `PASEJO_MODEL_SAMPLES` change the random
+runs, and `PASEJO_MODEL_TRACES=<dir>` replays traces written elsewhere.
+The `Model` CI job runs the scenario tests, a simulation without a fixed
+seed, a replay of 200 random runs of a fresh seed, and the bounded check.
+
+The suite turns each step into the event it stands for in a stubbed
+browser: a click on the row or button in the popup's DOM, the host's
+reply on the native port, a navigation that closes frame ports, a timer
+firing. After every step it compares the code with the model: each
+native request (action, store, secret, domain, request ids), which
+connections are closed, each credential a frame received and that
+frame's origin, which frames hold a fill-script port, each message a
+stream posted, the listed rows, the confirmation prompt and whether it is
+armed, the double-click guard, and the status line a finished fill
+leaves.
+
+What the model and the replay do not cover:
+
+* The fill script is a stand-in that answers with what the model says
+  the frame's form is. The visibility check itself is covered by
+  `tests/fill.test.js`.
+* The host is the model's host. Whether the Rust host behaves the same
+  is what the end-to-end suite checks.
+* A click runs without interruption up to its first host request, so
+  nothing navigates between the popup's tab re-check and the injection,
+  and the check of the top frame's origin after injection never fires in
+  the model. Unit tests cover it.
+* The store roster is fixed at two stores. The Refresh button, the
+  per-host store memory, the look-alike warning, the waiting state and
+  the service-worker keepalive are not modelled, and the store changes
+  only between fills.
+* Quint has no fairness, so "every stream ends" is checked as a safety
+  property: the timers of an open stream end it when they fire.
+
 ## Loading the unpacked extension
 
 * **Firefox** — open `about:debugging#/runtime/this-firefox`, click
@@ -561,6 +662,7 @@ src/                 Source files served verbatim from the extension
 manifests/           Per-browser manifest.json files
 icons/               Toolbar icons; edit pasejo.svg, then run make-icons.sh
 package.sh           Builds dist/<browser>/, the reproducible archives and SHA256SUMS
-tests/               Vitest unit suite (happy-dom)
+model/               Quint model of the popup, background and host (see Formal model)
+tests/               Vitest unit suite (happy-dom) and the model replay
 e2e/                 Playwright end-to-end suite (real Chrome + real host)
 ```
