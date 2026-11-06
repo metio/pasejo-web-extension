@@ -463,13 +463,13 @@ module extension {
     }
     val p = st.popup
     val current = p.open and p.session == s.session and p.gen == s.gen
-    // The popup redraws the whole list for every slot, which removes an
-    // open confirmation prompt from view.
+    // The popup keeps the rows it already lists and inserts the slot's new
+    // ones, so an open confirmation prompt stays open and armed.
     {
       ...st,
       streams: st.streams.set(port, stream),
       native: if (done) st.native.set(port, { ...st.native.get(port), open: false }) else st.native,
-      popup: if (current) { ...p, rows: p.rows.union(names), confirming: "", armed: false } else p,
+      popup: if (current) { ...p, rows: p.rows.union(names) } else p,
     }
 
   // The host answers request id `rid` on stream `port`.

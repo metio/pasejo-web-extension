@@ -2207,6 +2207,125 @@ describe("popup.js", () => {
       expect(popup.elements.status.textContent).toBe("2 matches.");
     });
 
+    it("keeps an open confirmation on its row while further stores answer", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api);
+      const filled = stubFrames(api, [
+        { frameId: 0, fill: { ok: true, filled: { username: true, password: true } } },
+      ]);
+      vi.spyOn(window, "close").mockImplementation(() => {});
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }, { name: "b" }];
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      pushStreamReply(api, {
+        type: "result",
+        index: 0,
+        response: {
+          results: [
+            { name: "bank/alice", store: "a", match_kind: "url_field", score: 0.9, confirm: true },
+          ],
+        },
+      });
+      await flushAsync();
+      const row = popup.elements.results.firstElementChild;
+      row.click();
+      await flushAsync();
+      const prompt = row.querySelector(".confirm");
+      const cancel = prompt.querySelectorAll("button")[1];
+      expect(document.activeElement).toBe(cancel);
+
+      pushStreamReply(api, {
+        type: "result",
+        index: 1,
+        response: {
+          results: [{ name: "top", store: "b", match_kind: "url_field", score: 1 }],
+        },
+      });
+      await flushAsync();
+      pushStreamReply(api, { type: "done" });
+      await queryDone;
+      const names = Array.from(
+        popup.elements.results.querySelectorAll(".name"),
+      ).map((n) => n.textContent);
+      expect(names).toEqual(["top", "bank/alice"]);
+      expect(popup.elements.results.children[1]).toBe(row);
+      expect(prompt.isConnected).toBe(true);
+      expect(document.activeElement).toBe(cancel);
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, popup.CONFIRM_ARM_DELAY_MS),
+      );
+      prompt.querySelector("button").click();
+      await flushAsync();
+      await flushAsync();
+      expect(revealRequests(api)).toEqual([
+        { type: "reveal", store: "a", name: "bank/alice", domain: "example.com" },
+      ]);
+      expect(filled).toEqual([0]);
+    });
+
+    it("shows a released code on the listed row when another store answers during the reveal", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api, {
+        reveal: (message) => ({
+          credential: { ...CREDENTIAL, name: message.name, otp: "123456" },
+        }),
+      });
+      const host = api.runtime.sendMessage;
+      const gate = deferred();
+      api.runtime.sendMessage = vi.fn(async (message) => {
+        if (message.type === "reveal") {
+          await gate.promise;
+        }
+        return host(message);
+      });
+      stubFrames(api, [
+        { frameId: 0, fill: { ok: true, filled: { username: true, password: true, otp: false } } },
+      ]);
+      vi.spyOn(window, "close").mockImplementation(() => {});
+      popup.state.domain = "example.com";
+      popup.state.store = popup.ALL_STORES;
+      popup.state.protocolOk = true;
+      popup.state.stores = [{ name: "a" }, { name: "b" }];
+      const queryDone = popup.runQuery();
+      await flushAsync();
+      pushStreamReply(api, {
+        type: "result",
+        index: 0,
+        response: {
+          results: [{ name: "alice", store: "a", match_kind: "url_field", score: 0.9 }],
+        },
+      });
+      await flushAsync();
+      // The fill opens frame ports too; replies go to the stream's port.
+      const stream = api.__streamPairs.at(-1);
+      const row = popup.elements.results.firstElementChild;
+      const fill = popup.fillIntoActiveTab(
+        { name: "alice", store: "a", match_kind: "url_field", score: 0.9 },
+        row,
+      );
+      await flushAsync();
+      stream.backgroundPort.postMessage({
+        type: "result",
+        index: 1,
+        response: {
+          results: [{ name: "top", store: "b", match_kind: "url_field", score: 1 }],
+        },
+      });
+      await flushAsync();
+      stream.backgroundPort.postMessage({ type: "done" });
+      await queryDone;
+      gate.resolve();
+      await fill;
+      expect(row.isConnected).toBe(true);
+      expect(popup.elements.results.querySelector(".otp").textContent).toBe(
+        "OTP: 123456",
+      );
+    });
+
     it("marks a per-store error response as skipped and names it in the final status", async () => {
       const { api, popup } = await setUp();
       popup.state.domain = "example.com";

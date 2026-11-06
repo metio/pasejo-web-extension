@@ -583,13 +583,26 @@ async function runMultiStoreQuery(generation) {
   // empty status line.
   setSearchingStatus();
 
+  // One row element per match for the whole query, so a confirmation
+  // prompt, a waiting state or a revealed code the user already has on a
+  // row stays on the row the popup shows while further stores answer.
+  const rows = new Map();
+  const rowFor = (match) => {
+    const key = JSON.stringify([match.store, match.name]);
+    let row = rows.get(key);
+    if (row === undefined) {
+      row = renderMatch(match);
+      rows.set(key, row);
+    }
+    return row;
+  };
+
   // Repaint the results list against the current `matches` / `skipped`
   // accumulator. Called on every incoming per-store result so the
   // user sees matches arrive one store at a time rather than after
   // the slowest store's timeout. Same generation-gating reasoning
   // as `setSearchingStatus`: the stream consumer is the gate.
   const renderIncremental = () => {
-    elements.results.replaceChildren();
     // Each store's results are pre-sorted by score (the host sorts
     // them); the merged list needs one more sort across stores so the
     // top match for the page always sits at the top of the popup
@@ -597,9 +610,7 @@ async function runMultiStoreQuery(generation) {
     const sorted = [...matches].sort(
       (a, b) => (b.score ?? 0) - (a.score ?? 0),
     );
-    for (const match of sorted) {
-      elements.results.appendChild(renderMatch(match));
-    }
+    placeRows(sorted.map(rowFor));
   };
 
   await streamMultiStoreBatch(generation, (index, response) => {
@@ -632,8 +643,7 @@ async function runMultiStoreQuery(generation) {
   // settled "N matches." / "No matches…" / "X store(s) skipped" copy
   // showMatches already knows how to format.
   const sorted = [...matches].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-  elements.results.replaceChildren();
-  showMatches(sorted, skipped.length, skipped);
+  showMatches(sorted, skipped.length, skipped, rowFor);
   // Each store names look-alikes only when it matched nothing itself, so
   // the warning is shown only when no store matched the page.
   if (sorted.length === 0) {
@@ -823,7 +833,7 @@ function streamMultiStoreBatch(generation, onResult) {
   });
 }
 
-function showMatches(matches, skippedCount, skippedNames) {
+function showMatches(matches, skippedCount, skippedNames, rowFor = renderMatch) {
   if (matches.length === 0) {
     if (skippedCount > 0) {
       setStatus(
@@ -852,9 +862,23 @@ function showMatches(matches, skippedCount, skippedNames) {
     );
   }
   setStatus(line);
-  for (const match of matches) {
-    elements.results.appendChild(renderMatch(match));
-  }
+  placeRows(matches.map(rowFor));
+}
+
+// Makes `rows` the children of the results list, in order. `runQuery`
+// empties the list, and a query's matches only accumulate under a stable
+// sort, so every row already listed is in `rows` in the same relative
+// order: an incoming store's rows are inserted between them, and a row
+// already in place is left alone, keeping focus and whatever the user
+// opened on it.
+function placeRows(rows) {
+  const list = elements.results;
+  rows.forEach((row, index) => {
+    const current = list.children[index] ?? null;
+    if (current !== row) {
+      list.insertBefore(row, current);
+    }
+  });
 }
 
 function renderMatch(match) {
