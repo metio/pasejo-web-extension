@@ -10,3 +10,5 @@ coverage/
 .web-ext
 test-results/
 playwright-report/
+_apalache-out/
+/tmp/

@@ -11,9 +11,14 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "coverage": "vitest run --coverage",
-    "package": "./package.sh"
+    "package": "./package.sh",
+    "model:typecheck": "quint typecheck model/extension_test.qnt && quint typecheck model/scenarios.qnt",
+    "model:test": "quint test model/extension_test.qnt --main extension_test",
+    "model:simulate": "quint run model/scenarios.qnt --main scenarios --max-samples 20000 --max-steps 40 --verbosity 1 --invariants fillOnlyIntoMatchingFrames fillOnlyOnQueriedPage revealOnlyAfterClick confirmBeforeReveal neverPolicyNeverReleased otpOnlyForExactHost streamCorrelatesReplies streamAlwaysEnds rowsComeFromHostReplies --witnesses filled filledIframe filledAfterFrameCheck filledAfterConfirmation filledFromSecondStore triedSecondFrame releasedOtp releasedWithoutFill releasedForGoneFrame stoppedForChangedPage stoppedWithoutAccess refusedByVisibility refusedOtherSite refusedReveal answeredStream abandonedStream",
+    "model:verify": "quint verify model/extension.qnt --main extension --invariant allInvariants --max-steps 6"
   },
   "devDependencies": {
+    "@informalsystems/quint": "^0.33.1",
     "@playwright/test": "^1.49.0",
     "@vitest/coverage-v8": "^3.0.0",
     "happy-dom": "^20.0.0",
