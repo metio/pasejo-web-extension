@@ -54,10 +54,11 @@ jobs:
           chmod +x pasejo
           echo "PASEJO_BIN=${PWD}/pasejo" >> "${GITHUB_ENV}"
 
-      # Bootstrap a store with one URL-tagged secret, using the fixed test
-      # age key from the Rust suite's `tests/common/mod.rs`. The unencrypted
-      # key lets the host decrypt without a passphrase prompt.
-      # `browser query` at the end fails the job early if the store is wrong.
+      # Bootstrap a store with one URL-tagged secret and a TOTP entry under
+      # the same name, using the fixed test age key from the Rust suite's
+      # `tests/common/mod.rs`. The unencrypted key lets the host decrypt
+      # without a passphrase prompt. `browser query` at the end fails the
+      # job early if the store is wrong.
       - name: Bootstrap a test store
         run: |
           set -eu
@@ -75,6 +76,7 @@ jobs:
           "${PASEJO_BIN}" recipient add --public-key "${PUBKEY}"
           printf '%s\n' 'hunter2' 'url: https://example.com' 'login: alice@example.com' \
             | "${PASEJO_BIN}" secret add alice
+          "${PASEJO_BIN}" otp add --secret JBSWY3DPEHPK3PXP alice
           "${PASEJO_BIN}" browser query example.com
           echo "PASEJO_CONFIG=${CONFIG}" >> "${GITHUB_ENV}"
 

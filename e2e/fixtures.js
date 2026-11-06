@@ -193,6 +193,14 @@ export async function openPopup(context, page) {
       evaluate(
         `document.querySelector("#results li")?.textContent ?? null`,
       ),
+    // Text of the whole result list.
+    resultsText: () =>
+      evaluate(`document.getElementById("results").textContent`),
+    // Text of the one-time code shown on the first row, or null.
+    firstRowOtp: () =>
+      evaluate(
+        `document.querySelector("#results li .otp")?.textContent ?? null`,
+      ),
     status: () => evaluate(`document.getElementById("status").textContent`),
     clickFirstRow: () =>
       evaluate(`document.querySelector("#results li").click()`),
