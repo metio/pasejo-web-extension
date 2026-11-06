@@ -284,5 +284,10 @@
       "domain": { "content": "$1" },
       "lookalikes": { "content": "$2" }
     }
+  },
+  "statusWaitingForKey": {
+    "message": "pasejo가 $NAME$을(를) 복호화하기를 기다리는 중입니다. 신원이 보안 키에 있다면 지금 키를 터치하세요.",
+    "description": "Shown when releasing a credential takes longer than a second, usually because the host waits for a security-key touch.",
+    "placeholders": { "name": { "content": "$1" } }
   }
 }

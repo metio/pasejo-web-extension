@@ -253,3 +253,28 @@ body {
   cursor: default;
   opacity: 0.6;
 }
+
+.status.waiting::before,
+.results li.waiting .name::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: waiting-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes waiting-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status.waiting::before,
+  .results li.waiting .name::before {
+    animation: none;
+  }
+}

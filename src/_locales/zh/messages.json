@@ -284,5 +284,10 @@
       "domain": { "content": "$1" },
       "lookalikes": { "content": "$2" }
     }
+  },
+  "statusWaitingForKey": {
+    "message": "正在等待 pasejo 解密 $NAME$。如果您的身份位于安全密钥上，请现在触摸它。",
+    "description": "Shown when releasing a credential takes longer than a second, usually because the host waits for a security-key touch.",
+    "placeholders": { "name": { "content": "$1" } }
   }
 }

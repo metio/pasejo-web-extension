@@ -145,6 +145,25 @@ plugin-backed identity such as one from `age-plugin-yubikey`. A plugin
 that asks for a PIN uses pinentry when one is available; set
 `PINENTRY_PROGRAM` to a graphical pinentry with `--env` as shown above.
 
+### Security keys
+
+A store encrypted to an identity on a security key — set up with
+`age-plugin-yubikey` as described in pasejo's
+[Yubikey guide](https://github.com/metio/pasejo/blob/main/docs/guides/how-to-use-yubikeys.md)
+— works with the extension once that identity file is registered with
+`pasejo identity add`. Every decryption goes through the key: the search
+when the popup opens (once per store searched), the release when you
+pick a match, and a search for a frame on another host of the same site
+when the fill has to ask the host about it. Whether each of those needs a
+touch follows the touch policy the identity was created with.
+
+When a release takes longer than a second, the popup says it is
+waiting for pasejo to decrypt the picked secret, asks you to touch the
+key if your identity is on one, and marks the row busy. Searching *All
+stores* answers store by store, so a store waiting for a touch does not
+hold back the others. The extension waits up to 30 seconds for each
+reply from the host.
+
 ## Supported browsers
 
 The extension targets the latest stable releases below. Every

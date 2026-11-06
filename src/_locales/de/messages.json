@@ -284,5 +284,10 @@
       "domain": { "content": "$1" },
       "lookalikes": { "content": "$2" }
     }
+  },
+  "statusWaitingForKey": {
+    "message": "Warten, bis pasejo $NAME$ entschlüsselt hat. Liegt Ihre Identität auf einem Sicherheitsschlüssel, berühren Sie ihn jetzt.",
+    "description": "Shown when releasing a credential takes longer than a second, usually because the host waits for a security-key touch.",
+    "placeholders": { "name": { "content": "$1" } }
   }
 }

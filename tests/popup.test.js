@@ -49,6 +49,7 @@ const EXPOSED = [
   "needsConfirmation",
   "CONFIRM_ARM_DELAY_MS",
   "fillAcrossFrames",
+  "REVEAL_SLOW_MS",
   "injectFillScript",
   "createFrameCollector",
   "orderFramesForFill",
@@ -4645,6 +4646,121 @@ describe("popup.js", () => {
         await queryAll(popup, api, [{ results: [] }, { results: [] }]);
         expect(popup.elements.warning.hidden).toBe(true);
       });
+    });
+  });
+
+  describe("waiting for a slow reveal", () => {
+    const match = Object.freeze({
+      name: "alice",
+      store: "personal",
+      username: "alice",
+      url: "https://example.com",
+      match_kind: "url_field",
+      score: 1,
+    });
+    const WAITING =
+      "Waiting for pasejo to decrypt alice. If your identity is on a security key, touch it now.";
+
+    // Holds every reveal until the test settles it.
+    function slowHost(api) {
+      const pending = deferred();
+      api.runtime.sendMessage = vi.fn((message) =>
+        message.type === "reveal"
+          ? pending.promise
+          : Promise.resolve({ ok: true, response: { results: [] } }),
+      );
+      return pending;
+    }
+
+    function okFrames(api) {
+      return stubFrames(api, [
+        { frameId: 0, fill: { ok: true, filled: { username: true, password: true } } },
+      ]);
+    }
+
+    it("shows the waiting state once a reveal takes longer than REVEAL_SLOW_MS", async () => {
+      const { api, popup } = await setUp();
+      const pending = slowHost(api);
+      const filled = okFrames(api);
+      vi.spyOn(window, "close").mockImplementation(() => {});
+      const row = popup.renderMatch(match);
+      popup.elements.results.appendChild(row);
+      vi.useFakeTimers();
+      const done = popup.fillIntoActiveTab(match, row);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(revealRequests(api)).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(popup.REVEAL_SLOW_MS - 1);
+      expect(popup.elements.status.textContent).not.toBe(WAITING);
+      expect(row.hasAttribute("aria-busy")).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(popup.elements.status.textContent).toBe(WAITING);
+      expect(popup.elements.status.classList.contains("waiting")).toBe(true);
+      expect(popup.elements.status.classList.contains("error")).toBe(false);
+      expect(row.getAttribute("aria-busy")).toBe("true");
+      expect(row.classList.contains("waiting")).toBe(true);
+
+      pending.resolve({ ok: true, response: { credential: CREDENTIAL } });
+      await vi.advanceTimersByTimeAsync(0);
+      await done;
+      expect(filled).toEqual([0]);
+      expect(popup.elements.status.textContent).toBe("Filled alice.");
+      expect(popup.elements.status.classList.contains("waiting")).toBe(false);
+      expect(row.hasAttribute("aria-busy")).toBe(false);
+      expect(row.classList.contains("waiting")).toBe(false);
+    });
+
+    it("never shows the waiting state for a fast reveal", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api);
+      okFrames(api);
+      vi.spyOn(window, "close").mockImplementation(() => {});
+      const row = popup.renderMatch(match);
+      popup.elements.results.appendChild(row);
+      vi.useFakeTimers();
+      const done = popup.fillIntoActiveTab(match, row);
+      await vi.advanceTimersByTimeAsync(0);
+      await done;
+      await vi.advanceTimersByTimeAsync(popup.REVEAL_SLOW_MS * 2);
+      expect(popup.elements.status.textContent).toBe("Filled alice.");
+      expect(row.hasAttribute("aria-busy")).toBe(false);
+    });
+
+    it("ends the waiting state when the reveal is refused", async () => {
+      const { api, popup } = await setUp();
+      const pending = slowHost(api);
+      okFrames(api);
+      const row = popup.renderMatch(match);
+      popup.elements.results.appendChild(row);
+      vi.useFakeTimers();
+      const done = popup.fillIntoActiveTab(match, row);
+      await vi.advanceTimersByTimeAsync(popup.REVEAL_SLOW_MS);
+      expect(popup.elements.status.textContent).toBe(WAITING);
+      pending.resolve({
+        ok: true,
+        response: { error: "identity_locked", store: "personal" },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await done;
+      expect(popup.elements.status.textContent).toMatch(/^Could not decrypt/);
+      expect(popup.elements.status.classList.contains("waiting")).toBe(false);
+      expect(popup.elements.status.classList.contains("error")).toBe(true);
+      expect(row.hasAttribute("aria-busy")).toBe(false);
+    });
+
+    it("shows the waiting status without a row", async () => {
+      const { api, popup } = await setUp();
+      const pending = slowHost(api);
+      okFrames(api);
+      vi.spyOn(window, "close").mockImplementation(() => {});
+      vi.useFakeTimers();
+      const done = popup.fillIntoActiveTab(match);
+      await vi.advanceTimersByTimeAsync(popup.REVEAL_SLOW_MS);
+      expect(popup.elements.status.textContent).toBe(WAITING);
+      pending.resolve({ ok: true, response: { credential: CREDENTIAL } });
+      await vi.advanceTimersByTimeAsync(0);
+      await done;
+      expect(popup.elements.status.textContent).toBe("Filled alice.");
     });
   });
 });

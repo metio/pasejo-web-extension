@@ -97,7 +97,9 @@ function truncateStatus(raw) {
 // `role="status"` + `aria-live="polite"` (defers to current activity).
 // Both attributes are set explicitly: an inherited `aria-live="polite"`
 // from the HTML would otherwise override the `role="alert"` implicit
-// assertiveness and downgrade error announcements to polite.
+// assertiveness and downgrade error announcements to polite. The
+// `waiting` kind is informational and marks the status as waiting on
+// the user, e.g. for a security-key touch.
 function setStatus(text, kind) {
   const { text: visible, title } = truncateStatus(text);
   elements.status.textContent = visible;
@@ -106,6 +108,7 @@ function setStatus(text, kind) {
   } else {
     elements.status.title = title;
   }
+  elements.status.classList.toggle("waiting", kind === "waiting");
   if (kind === "error") {
     elements.status.classList.add("error");
     elements.status.setAttribute("role", "alert");
@@ -972,6 +975,31 @@ async function revealCredential(match, page) {
   return { credential: reply.credential };
 }
 
+// How long a reveal may take before the popup says it is waiting. A
+// reveal decrypts the store again; with a plugin identity such as
+// age-plugin-yubikey that waits for a touch of the security key, which
+// is the usual reason for a reveal to take longer than this.
+const REVEAL_SLOW_MS = 1_000;
+
+// `revealCredential`, plus a waiting state on the status line and on
+// `row` once the reveal has taken `REVEAL_SLOW_MS`, so the user knows to
+// touch the key. The row's waiting state ends with the reveal; the
+// status line keeps it until the fill reports its outcome.
+async function revealWithWaitingState(match, page, row) {
+  const timer = setTimeout(() => {
+    setStatus(t("statusWaitingForKey", match.name), "waiting");
+    row?.classList.add("waiting");
+    row?.setAttribute("aria-busy", "true");
+  }, REVEAL_SLOW_MS);
+  try {
+    return await revealCredential(match, page);
+  } finally {
+    clearTimeout(timer);
+    row?.classList.remove("waiting");
+    row?.removeAttribute("aria-busy");
+  }
+}
+
 // The message a frame fills from: the released credential only.
 function fillMessage(credential) {
   return {
@@ -1082,7 +1110,7 @@ async function fillIntoActiveTab(match, row, { confirmed = false } = {}) {
   const lookups = new Map();
   const reply = await fillAcrossFrames(
     page,
-    () => revealCredential(match, page),
+    () => revealWithWaitingState(match, page, row),
     (frame) => frameMatchesCredential(frame, match, page, lookups),
   );
   if (reply.revealFailure) {

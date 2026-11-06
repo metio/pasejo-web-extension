@@ -284,5 +284,10 @@
       "domain": { "content": "$1" },
       "lookalikes": { "content": "$2" }
     }
+  },
+  "statusWaitingForKey": {
+    "message": "Esperando a que pasejo descifre $NAME$. Si su identidad está en una llave de seguridad, tóquela ahora.",
+    "description": "Shown when releasing a credential takes longer than a second, usually because the host waits for a security-key touch.",
+    "placeholders": { "name": { "content": "$1" } }
   }
 }
