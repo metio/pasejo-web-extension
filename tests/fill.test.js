@@ -967,6 +967,67 @@ describe("fill.js content script", () => {
     });
   });
 
+  describe("no UI inside the page", () => {
+    it("adds no element, shadow root or frame to the page while it loads, reports ready and fills", async () => {
+      vi.useFakeTimers();
+      document.body.innerHTML = "<form id='f'></form>";
+      const form = document.getElementById("f");
+      const username = makeVisibleInput("text", {
+        props: { name: "username" },
+        attached: false,
+      });
+      form.appendChild(username);
+      const password = makeVisibleInput("password", { attached: false });
+      form.appendChild(password);
+      const otp = makeVisibleInput("text", {
+        props: { autocomplete: "one-time-code" },
+      });
+      const decoy = makeVisibleInput("password");
+      const overlay = coverWith(decoy);
+      decoy.focus();
+      const elementsBefore = document.querySelectorAll("*").length;
+
+      const records = [];
+      const observer = new MutationObserver((batch) => records.push(...batch));
+      observer.observe(document, { childList: true, subtree: true });
+      const builders = [
+        vi.spyOn(document, "createElement"),
+        vi.spyOn(document, "createElementNS"),
+        vi.spyOn(Element.prototype, "attachShadow"),
+        vi.spyOn(Element.prototype, "insertAdjacentHTML"),
+        vi.spyOn(Element.prototype, "insertAdjacentElement"),
+      ];
+
+      reloadFiller();
+      const filled = await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "p",
+        otp: "123456",
+      });
+      const elementsAfterFill = document.querySelectorAll("*").length;
+      document.body.replaceChildren(decoy, overlay);
+      const refused = await callListener(api, { type: "fill", password: "p" });
+      vi.advanceTimersByTime(1_000);
+
+      expect(filled.ok).toBe(true);
+      expect(refused).toMatchObject({ ok: false, reason: "covered" });
+      expect(otp.value).toBe("123456");
+      // The only childList change is the test's own `replaceChildren`.
+      records.push(...observer.takeRecords());
+      const added = records.flatMap((record) => Array.from(record.addedNodes));
+      expect(added).toEqual([decoy, overlay]);
+      for (const builder of builders) {
+        expect(builder).not.toHaveBeenCalled();
+      }
+      expect(elementsAfterFill).toBe(elementsBefore);
+      expect(document.querySelectorAll("*")).toHaveLength(
+        document.querySelectorAll("html, head, body").length + 2,
+      );
+      observer.disconnect();
+    });
+  });
+
   describe("visible-field check at fill time", () => {
     // Fills a lone password field and returns the reply plus the field.
     async function fillLonePassword(prepare) {

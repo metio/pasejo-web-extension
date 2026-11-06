@@ -22,6 +22,16 @@ a known property of the design, not a vulnerability.
 * **Credentials are never written to browser storage.** Only the
   store-name-per-hostname preference is persisted; secrets live in
   memory for the duration of a popup interaction.
+* **No UI inside web pages.** The extension never draws anything into
+  a page: no inline buttons or suggestion lists in fields, no injected
+  elements, shadow roots, frames or dialogs. Anything drawn inside a
+  page can be restyled, overlaid or covered by that page, which is how
+  clickjacking tricks a user into approving something they cannot see.
+  Every choice you make happens in the browser-owned popup, which a
+  page can neither overlay nor script. The only visible change a fill
+  makes to a page is the brief outline on each field it filled. Tests
+  pin the rule: the fill script contains no API that adds nodes, and
+  running it adds no element, shadow root or frame to the page.
 * **No standing access to pages.** The manifests declare no host
   permissions and no content scripts. Opening the popup grants
   `activeTab` for the one tab it opened on; the fill script is injected
