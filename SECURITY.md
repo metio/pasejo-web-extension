@@ -22,6 +22,15 @@ a known property of the design, not a vulnerability.
 * **Credentials are never written to browser storage.** Only the
   store-name-per-hostname preference is persisted; secrets live in
   memory for the duration of a popup interaction.
+* **One credential, one site, at click time.** Listing matches
+  releases no secret: the host's `query` reply carries only names,
+  usernames, URLs and match scores. A password leaves the host only
+  when you pick a match, through a `reveal` for that one secret and the
+  hostname of the page the popup opened on. The host decrypts the store
+  again and re-runs its matcher for that hostname, and refuses
+  (`not_matched`) when the secret does not match it. The current TOTP
+  code is released only for a stored URL naming the page's exact host;
+  HOTP codes are never released.
 * **No UI inside web pages.** The extension never draws anything into
   a page: no inline buttons or suggestion lists in fields, no injected
   elements, shadow roots, frames or dialogs. Anything drawn inside a
@@ -53,6 +62,13 @@ a known property of the design, not a vulnerability.
   non-`http(s)` origins never qualify. Under `activeTab` the browser
   already keeps cross-origin frames out of reach; the check holds even
   where a browser would inject further.
+* **Credentials go only into fields you can see.** At fill time the
+  fill script skips any field that has no size, is not rendered, is
+  `visibility: hidden`, is (nearly) transparent through its own or an
+  ancestor's opacity, cannot be scrolled into the viewport, or lies
+  under another element at its centre (a label belonging to the field
+  is allowed). A decoy field is passed over for a visible one; when no
+  visible field is left, nothing is filled and the popup says why.
 * **A fill targets the page the results were for.** The popup records
   the tab and origin it opened on and refuses to fill when the active
   tab, or its origin, has changed by the time a match is picked. Once
@@ -84,6 +100,15 @@ it. A page cannot *talk* to the script, but it sees the result: the
 values written into its inputs, the `input` / `change` events, and the
 brief outline pulse on each filled input. A page the user fills can
 therefore infer that an autofill extension is installed.
+
+### A transparent frame can hide a field from the visibility check
+
+The visibility check runs inside the frame being filled and sees that
+frame's own document. It cannot see how the embedding page styles the
+frame element itself, so a page that embeds a frame and makes the
+frame transparent or covers it is not detected from inside. A frame
+only receives a credential when its own origin matches the secret, so
+the embedding page would have to be one the secret already matches.
 
 ### Another extension can read filled credentials
 

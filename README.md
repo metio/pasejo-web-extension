@@ -18,7 +18,9 @@ telemetry. See [PRIVACY.md](PRIVACY.md) for the full statement.
 
 Prerequisites: a working [pasejo][pasejo] install with at least one
 store and one identity the host can use without a terminal (see
-*Identities* below).
+*Identities* below). The extension speaks version 2 of the
+`pasejo browser host` protocol and refuses to work with a `pasejo`
+release that speaks another version.
 
 1. **Install the extension** from
    [Firefox Add-ons](https://addons.mozilla.org/) or the
@@ -55,6 +57,22 @@ store and one identity the host can use without a terminal (see
    password into the page. The popup remembers which store you picked
    for that hostname and restores it next time.
 
+## Releasing a credential
+
+The list of matches carries no password and no one-time code: the
+host answers the popup's search with names, usernames and URLs only.
+Picking a match asks the host to release that one credential for the
+hostname of the page the popup opened on. The host decrypts the store
+again, checks that the secret still matches that hostname, and only
+then returns the password, which goes straight into the page. A secret
+that no longer matches is refused with *The host did not release this
+credential for this site*.
+
+The fill puts a credential only into fields you can see. A field that
+is hidden, transparent, outside the page's scrollable area or covered
+by another element is skipped; when no visible field is left, nothing
+is filled and the popup says which of these it found.
+
 ## Page access
 
 The extension holds no standing access to websites. It asks for
@@ -70,7 +88,7 @@ permissions, so installing it grants no access to any site.
   the page's own origin. Under `activeTab` the browser keeps frames
   from other origins out of reach, so a login form inside a
   cross-origin iframe cannot be filled.
-* **Before a credential leaves the popup**, the extension checks that
+* **Before a credential is released**, the extension checks that
   the tab still shows the origin the popup searched for, and that
   each frame's origin — as the browser reports it, not as the page
   claims it — matches the secret the same way the host matched it
@@ -145,16 +163,20 @@ manifest points at.
 
 ## OTPs
 
-If the matching secret has a TOTP entry under the same name, Fill also
-fills the site's one-time-code field when the page has one — both on the
-login page and on a standalone 2FA step (open the popup there and pick the
-match). Detection prefers the `autocomplete="one-time-code"` standard, then
-a tight set of name hints, so an unrelated code field (coupon, zip) is not
-mistaken for it. The popup also shows the current code as read-only text as
-a manual fallback. For auto-clearing-clipboard behaviour instead, reach for
-`pasejo otp show --clip` from a terminal; the extension never writes to the
-clipboard. (HOTP is not autofilled — emitting a counter-based code without
-advancing the counter would break it.)
+If the matching secret has a TOTP entry under the same name and one of
+its URL fields names the page's exact host, Fill also fills the site's
+one-time-code field when the page has one — both on the login page and on
+a standalone 2FA step (open the popup there and pick the match). A match
+through a sibling subdomain or through the secret's name fills the
+password without the code. Detection prefers the
+`autocomplete="one-time-code"` standard, then a tight set of name hints,
+so an unrelated code field (coupon, zip) is not mistaken for it. The
+result list shows no code. When a fill releases a code and the page has
+no field for it, the popup shows the code on the picked row as a manual
+fallback and stays open. For auto-clearing-clipboard behaviour instead,
+reach for `pasejo otp show --clip` from a terminal; the extension never
+writes to the clipboard. (HOTP is not autofilled — emitting a
+counter-based code without advancing the counter would break it.)
 
 ## Languages
 
@@ -186,7 +208,9 @@ merges the results.
 
 * **No inline suggestion picker in password fields.** The popup is the
   only entry point; some users prefer a 1Password-style dropdown
-  inside the field itself.
+  inside the field itself. This is deliberate: the extension draws no
+  UI inside web pages, which a page could overlay (see
+  [SECURITY.md](SECURITY.md)).
 * **No save-new-credential flow.** Read-only for now — adding a new
   secret still goes through the CLI.
 
@@ -257,9 +281,13 @@ the Rust host. Each test registers the host with
 profile, serves pages at `example.com` and `evil.test` by request
 interception, opens the toolbar popup with `chrome.action.openPopup()`, and
 drives it over a CDP session (headless Chromium runs the popup but does not
-hand it to Playwright as a page). It covers a top-frame fill, a fill into a
+hand it to Playwright as a page). It covers a top-frame fill released by a
+`reveal` (with the password checked absent from the popup before the
+click), the TOTP code released for the exact host, a fill into a
 same-origin iframe, a cross-origin iframe the secret does not match being
-skipped, and a fill refused after the tab navigated to another site.
+skipped, a transparent decoy field passed over for the visible one, a
+covered password field refused, and a fill refused after the tab
+navigated to another site.
 
 `openPopup()` is not a user gesture, so it grants no `activeTab`. The test
 copies the extension and adds host permissions for exactly the two test
@@ -270,9 +298,13 @@ reachable, and that cross-origin frames stay out of reach under
 `activeTab` alone. The manual checklist below covers those. Firefox is not
 covered by the suite either.
 
-The `End-to-end` CI workflow downloads a released `pasejo` binary,
-bootstraps the store, and runs the suite. Run it locally with a store
-bootstrapped the same way (see `.github/workflows/e2e.yml`):
+The `End-to-end` CI workflow downloads a released `pasejo` binary (the
+latest release, or the tag in the `PASEJO_HOST_VERSION` repository
+variable), bootstraps the store, and runs the suite. The binary has to
+speak the protocol version the extension expects, so the suite fails
+against a release that predates it. Run it locally with a store
+bootstrapped the same way (see `.github/workflows/e2e.yml`), pointing
+`PASEJO_BIN` at a `pasejo` build that speaks the same protocol:
 
 ```sh
 ./package.sh                                   # build dist/chromium first
@@ -306,10 +338,15 @@ Pin the extension to the toolbar so the popup is one click away.
   the results list and the `(answered/total)` progress counter
   update store by store, so a YubiKey-blocked store doesn't gate
   the others on screen either. The extension and the host negotiate
-  on `protocol_version` (currently `1`) and refuse to operate if
+  on `protocol_version` (currently `2`) and refuse to operate if
   the two sides disagree.
 * When the user opens the popup, the extension sends a `query` request
-  with the active tab's hostname and renders the returned matches.
+  with the active tab's hostname and renders the returned matches,
+  which carry metadata only.
+* When the user picks a match, the popup sends a `reveal` request for
+  that store, secret name and hostname. It does so once per fill, after
+  the tab and frame checks, right before the first frame that may
+  receive the credential gets it.
 * Filling a credential injects `content/fill.js` into every frame of
   the tab the browser lets the extension reach. Each injected frame
   opens a `pasejo-frame` port back to the popup; the popup reads the
@@ -317,9 +354,9 @@ Pin the extension to the toolbar so the popup is one click away.
   frames whose origin the secret does not match, and sends the
   credential over the port of one frame at a time — the frame that
   held focus first. The fill script assigns the username and password
-  into the focused form (or the first plausible form in its frame) and
-  dispatches `input` / `change` events so framework-driven inputs
-  notice.
+  into the focused form (or the first plausible form in its frame),
+  skipping fields the user cannot see, and dispatches `input` /
+  `change` events so framework-driven inputs notice.
 
 There is no automatic fill on page load, no clipboard write without an
 explicit user click, and no credential ever lands in `storage` — the
@@ -355,9 +392,14 @@ or to `pasejo browser host`.
 * Click the row (anywhere outside the Fill button). Expect the
   credentials to fill into the active page, the status to read
   *Filled …*, and the popup to auto-close ~600 ms later.
-* For a secret with an OTP, expect *OTP: 123456* to appear in the
-  row's secondary line and update when you reopen the popup after
-  30 s.
+* For a secret with a TOTP entry and a URL naming the page's exact
+  host, expect no code in the result list. On a page without a
+  one-time-code field, expect the fill to show *OTP: 123456* on the row
+  and the popup to stay open; on a page with one, expect the code in
+  the field.
+* On a page whose only password field is transparent or covered by
+  another element, expect *Nothing filled* with the reason and an
+  empty field.
 * Open the popup with the keyboard shortcut instead of the toolbar
   icon. Expect the same matches and a working fill.
 * Open the popup on a page whose login form sits in a same-origin

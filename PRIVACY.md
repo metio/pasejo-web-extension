@@ -11,7 +11,10 @@ personal data.
 ## What stays on your machine
 
 * **Credentials in your pasejo stores** are decrypted on demand by the
-  `pasejo browser host` process the extension talks to. They are never
+  `pasejo browser host` process the extension talks to. Searching for
+  matches hands the extension names, usernames and URLs only; a
+  password, and a one-time code where the site qualifies, reaches the
+  extension only when you pick a match to fill. Credentials are never
   written to browser storage, never sent over the network, and never
   shared with any third party.
 * **Per-host store memory** — the popup remembers which pasejo store you
