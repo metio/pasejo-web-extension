@@ -2,20 +2,46 @@
 # SPDX-FileCopyrightText: The pasejo Authors
 # SPDX-License-Identifier: 0BSD
 
-# Build ready-to-load extension directories under dist/. Each output
-# folder is a copy of src/ with the matching manifest.json at its root,
-# which is what `web-ext run` / `chrome --load-extension` expect. After
-# the unpacked dirs are written, also zip each into an archive ready for
-# AMO / Chrome Web Store submission:
-#   * dist/pasejo-firefox.xpi   — AMO accepts .xpi (zip with that suffix)
-#   * dist/pasejo-chromium.zip  — Chrome Web Store accepts plain .zip
-# In both cases the archive root is the manifest.json, not the parent
-# directory — that's what the stores require.
+# Usage: ./package.sh [VERSION]
+#
+# Builds the unpacked extensions under dist/firefox and dist/chromium, the
+# store archives dist/pasejo-firefox.xpi and dist/pasejo-chromium.zip (with
+# manifest.json at the archive root, as AMO and the Chrome Web Store
+# require), and dist/SHA256SUMS over both archives. VERSION, when given,
+# replaces the manifests' version in dist/ only.
+#
+# The archives are byte-reproducible: entries are sorted, every file is
+# mode 0644 with the timestamp SOURCE_DATE_EPOCH (default 1980-01-01, the
+# earliest a zip entry can carry), and zip stores no uid/gid or extended
+# timestamps. Two builds of the same commit with the same zip program
+# therefore produce the same SHA256SUMS.
 
 set -eu
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 DIST="${ROOT}/dist"
+VERSION="${1:-}"
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-315532800}"
+
+export TZ=UTC LC_ALL=C
+# zip reads default options from these variables.
+unset ZIPOPT ZIP
+
+if [ -n "${VERSION}" ] && ! printf '%s\n' "${VERSION}" | grep -Eqx '[0-9]+(\.[0-9]+){0,3}'; then
+  printf 'package.sh: %s is not a manifest version (one to four dot-separated integers)\n' "${VERSION}" >&2
+  exit 1
+fi
+
+STAMP="$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y%m%d%H%M.%S 2>/dev/null ||
+  date -u -r "${SOURCE_DATE_EPOCH}" +%Y%m%d%H%M.%S)"
+
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$@"
+  else
+    shasum -a 256 "$@"
+  fi
+}
 
 build() {
   target="$1"
@@ -23,26 +49,30 @@ build() {
   rm -rf "${out}"
   mkdir -p "${out}" "${out}/icons"
   cp -R "${ROOT}/src/." "${out}/"
-  cp "${ROOT}/manifests/${target}.json" "${out}/manifest.json"
-  # Only ship the rendered PNGs the manifests reference. The SVG source
-  # and the make-icons.sh helper are kept out of the extension bundle.
+  if [ -n "${VERSION}" ]; then
+    sed "s/^  \"version\": \"[^\"]*\",\$/  \"version\": \"${VERSION}\",/" \
+      "${ROOT}/manifests/${target}.json" >"${out}/manifest.json"
+    grep -qx "  \"version\": \"${VERSION}\"," "${out}/manifest.json"
+  else
+    cp "${ROOT}/manifests/${target}.json" "${out}/manifest.json"
+  fi
+  # The SVG source and make-icons.sh stay out of the bundle.
   for png in "${ROOT}/icons"/*.png; do
     [ -f "${png}" ] && cp "${png}" "${out}/icons/"
   done
+  find "${out}" -type d -exec chmod 0755 {} +
+  find "${out}" -type f -exec chmod 0644 {} +
+  find "${out}" -exec touch -t "${STAMP}" {} +
   printf 'built %s\n' "${out}"
 }
 
 archive() {
   target="$1"
   suffix="$2"
-  out="${DIST}/${target}"
-  archive_path="${DIST}/pasejo-${target}.${suffix}"
-  rm -f "${archive_path}"
-  # cd into the unpacked dir so the archive root is manifest.json (not
-  # `<target>/manifest.json`); -X strips extra OS metadata so two runs
-  # on the same source produce byte-identical archives where possible.
-  (cd "${out}" && zip -qrX "${archive_path}" .)
-  printf 'packaged %s\n' "${archive_path}"
+  name="pasejo-${target}.${suffix}"
+  rm -f "${DIST}/${name}"
+  (cd "${DIST}/${target}" && find . -type f | sed 's|^\./||' | sort | zip -qX -D -@ "${DIST}/${name}")
+  printf 'packaged %s\n' "${DIST}/${name}"
 }
 
 for target in firefox chromium; do
@@ -51,3 +81,6 @@ done
 
 archive firefox xpi
 archive chromium zip
+
+(cd "${DIST}" && sha256 pasejo-chromium.zip pasejo-firefox.xpi >SHA256SUMS)
+printf 'wrote %s\n' "${DIST}/SHA256SUMS"
