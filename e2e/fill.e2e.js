@@ -3,8 +3,8 @@
 
 import { expect, openPopup, test } from "./fixtures.js";
 
-// A minimal login form. The store the CI step bootstraps holds one secret
-// named `alice`:
+// A minimal login form. `bootstrap-store.sh` writes the stores the tests
+// read; its `test` store holds a secret named `alice`:
 //   password: hunter2 / url: https://example.com / login: alice@example.com
 // plus a TOTP entry under the same name, so a page at `example.com` lists
 // it and, being the URL's exact host, gets the current code on a reveal.
@@ -188,4 +188,84 @@ test("refuses to fill after the tab navigated to another site", async ({
   await expect.poll(popup.status).toMatch(/^The page changed/);
   await expect(page.locator("#username")).toHaveValue("");
   await expect(page.locator("#password")).toHaveValue("");
+});
+
+test("never lists a secret whose policy keeps it out of the browser", async ({
+  context,
+}) => {
+  await serve(context, { "http://example.com/**": LOGIN_FORM });
+  const page = await context.newPage();
+  await page.goto("http://example.com/login");
+
+  const popup = await openPopup(context, page);
+  await expect.poll(popup.firstRowText).toContain("alice");
+  // `carol` names the same URL but carries `pasejo-fill: never`.
+  expect(await popup.resultsText()).not.toContain("carol");
+});
+
+test("asks before filling a secret whose policy asks for confirmation", async ({
+  context,
+}) => {
+  await serve(context, { "http://confirm.test/**": LOGIN_FORM });
+  const page = await context.newPage();
+  await page.goto("http://confirm.test/login");
+
+  const popup = await openPopup(context, page);
+  await expect.poll(popup.firstRowText).toContain("dave");
+  await popup.clickFirstRow();
+
+  await expect
+    .poll(popup.confirmPrompt)
+    .toBe(
+      "Fill dave into confirm.test? This secret asks to be confirmed every time.",
+    );
+  await expect(page.locator("#password")).toHaveValue("");
+
+  await expect.poll(popup.confirmArmed).toBe(true);
+  await popup.clickConfirm();
+  await expect(page.locator("#username")).toHaveValue("dave@confirm.test");
+  await expect(page.locator("#password")).toHaveValue("confirm-me");
+});
+
+test("warns that the page looks like a site the store holds a login for", async ({
+  context,
+}) => {
+  await serve(context, { "http://examp1e.com/**": LOGIN_FORM });
+  const page = await context.newPage();
+  await page.goto("http://examp1e.com/login");
+
+  const popup = await openPopup(context, page);
+  await expect
+    .poll(popup.warning)
+    .toBe(
+      "Careful: you have no login for examp1e.com, but it looks like example.com, where you do. Check the address bar before you enter anything.",
+    );
+  expect(await popup.status()).toBe("No matches for examp1e.com.");
+});
+
+test("shows that it is waiting while a reveal decrypts slowly", async ({
+  context,
+}) => {
+  await serve(context, { "http://slow.test/**": LOGIN_FORM });
+  const page = await context.newPage();
+  await page.goto("http://slow.test/login");
+
+  const popup = await openPopup(context, page);
+  await expect.poll(popup.status).toBe("No matches for slow.test.");
+  await popup.selectStore("slow");
+  await expect.poll(popup.firstRowText).toContain("erin");
+  await popup.clickFirstRow();
+
+  // Every decryption of the `slow` store waits two seconds for its pull
+  // hook, as one waiting for a security-key touch would.
+  await expect
+    .poll(popup.status)
+    .toBe(
+      "Waiting for pasejo to decrypt erin. If your identity is on a security key, touch it now.",
+    );
+  expect(await popup.statusWaiting()).toBe(true);
+  expect(await popup.firstRowBusy()).toBe(true);
+
+  await expect(page.locator("#password")).toHaveValue("slow-secret");
+  expect(await popup.firstRowBusy()).toBe(false);
 });

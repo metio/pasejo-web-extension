@@ -22,9 +22,15 @@ const builtExtension = path.resolve(here, "..", "dist", "chromium");
 // these sites, standing in for the `activeTab` grant. `evil.test` is in
 // the list so a cross-origin iframe can be injected at all, which is what
 // lets a test show the popup's own origin check refusing it.
+// `examp1e.com` is the look-alike of `example.com`; `confirm.test` and
+// `slow.test` hold the secrets that ask for confirmation and that decrypt
+// slowly (see `bootstrap-store.sh`).
 export const TEST_HOST_PERMISSIONS = Object.freeze([
   "http://example.com/*",
   "http://evil.test/*",
+  "http://examp1e.com/*",
+  "http://confirm.test/*",
+  "http://slow.test/*",
 ]);
 
 // Copies the built extension into `dir` and adds the test-only host
@@ -94,7 +100,10 @@ export const test = base.extend({
   // Registers the real `pasejo browser host` for this run's extension id.
   // The wrapper `install-manifest` writes execs the binary with
   // PASEJO_CONFIG baked in, which is how the browser-spawned host (whose
-  // environment is otherwise stripped) finds the test store. Chromium
+  // environment is otherwise stripped) finds the test store, and with the
+  // extension's origin as the one caller the host accepts. Hook throttling
+  // is off so the `slow` store's pull hook delays every decryption, the
+  // reveal included. Chromium
   // reads user-level host manifests from `NativeMessagingHosts` in its
   // profile directory, so the manifest is copied there too.
   nativeHost: async ({ extensionId, workDir, isolatedEnv }, use) => {
@@ -116,6 +125,8 @@ export const test = base.extend({
         extensionId,
         "--env",
         `PASEJO_CONFIG=${pasejoConfig}`,
+        "--env",
+        "PASEJO_DISABLE_HOOK_THROTTLING=1",
       ],
       { stdio: "inherit", env: isolatedEnv },
     );
@@ -202,6 +213,36 @@ export async function openPopup(context, page) {
         `document.querySelector("#results li .otp")?.textContent ?? null`,
       ),
     status: () => evaluate(`document.getElementById("status").textContent`),
+    // Whether the status line shows the waiting state.
+    statusWaiting: () =>
+      evaluate(`document.getElementById("status").classList.contains("waiting")`),
+    // Text of the look-alike warning, or null while it is hidden.
+    warning: () =>
+      evaluate(
+        `(() => { const w = document.getElementById("warning"); return w.hidden ? null : w.textContent; })()`,
+      ),
+    // Text of the confirmation prompt on the first row, or null.
+    confirmPrompt: () =>
+      evaluate(
+        `document.querySelector("#results li .confirm-text")?.textContent ?? null`,
+      ),
+    // Whether the prompt's confirm button accepts clicks yet.
+    confirmArmed: () =>
+      evaluate(
+        `document.querySelector("#results li .confirm button")?.getAttribute("aria-disabled") === null`,
+      ),
+    clickConfirm: () =>
+      evaluate(`document.querySelector("#results li .confirm button").click()`),
+    // Whether the first row is marked busy.
+    firstRowBusy: () =>
+      evaluate(
+        `document.querySelector("#results li")?.getAttribute("aria-busy") === "true"`,
+      ),
+    // Picks `name` in the Store dropdown the way a user's choice does.
+    selectStore: (name) =>
+      evaluate(
+        `(() => { const s = document.getElementById("store"); s.value = ${JSON.stringify(name)}; s.dispatchEvent(new Event("change")); })()`,
+      ),
     clickFirstRow: () =>
       evaluate(`document.querySelector("#results li").click()`),
   };

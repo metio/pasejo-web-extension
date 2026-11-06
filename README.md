@@ -324,7 +324,9 @@ headless Chromium with the unpacked `dist/chromium` build loaded and the
 only configuration that catches protocol drift between this extension and
 the Rust host. Each test registers the host with
 `pasejo browser install-manifest` inside a throwaway home and browser
-profile, serves pages at `example.com` and `evil.test` by request
+profile, so the host runs through the generated wrapper and accepts only
+the test extension's origin. It serves pages at `example.com`,
+`evil.test`, `examp1e.com`, `confirm.test` and `slow.test` by request
 interception, opens the toolbar popup with `chrome.action.openPopup()`, and
 drives it over a CDP session (headless Chromium runs the popup but does not
 hand it to Playwright as a page). It covers a top-frame fill released by a
@@ -332,11 +334,19 @@ hand it to Playwright as a page). It covers a top-frame fill released by a
 click), the TOTP code released for the exact host, a fill into a
 same-origin iframe, a cross-origin iframe the secret does not match being
 skipped, a transparent decoy field passed over for the visible one, a
-covered password field refused, and a fill refused after the tab
-navigated to another site.
+covered password field refused, a fill refused after the tab
+navigated to another site, a `pasejo-fill: never` secret left out of the
+list, a `pasejo-confirm: always` secret filled only after the prompt is
+confirmed, the look-alike warning on `examp1e.com`, and the waiting state
+of a slow reveal.
+
+No test uses a security key. The slow reveal comes from a store whose
+pull hook sleeps for two seconds, with hook throttling turned off so the
+reveal waits as well as the search; that exercises the popup's waiting
+state, not a plugin identity or a touch.
 
 `openPopup()` is not a user gesture, so it grants no `activeTab`. The test
-copies the extension and adds host permissions for exactly the two test
+copies the extension and adds host permissions for exactly the test
 sites to the copy's manifest; the shipped manifests stay without host
 permissions. That substitution means the suite does **not** cover the
 `activeTab` grant itself — that the toolbar click or shortcut makes the page
@@ -346,18 +356,19 @@ covered by the suite either.
 
 The `End-to-end` CI workflow downloads a released `pasejo` binary (the
 latest release, or the tag in the `PASEJO_HOST_VERSION` repository
-variable), bootstraps the store, and runs the suite. The binary has to
-speak the protocol version the extension expects, so the suite fails
-against a release that predates it. Run it locally with a store
-bootstrapped the same way (see `.github/workflows/e2e.yml`), pointing
-`PASEJO_BIN` at a `pasejo` build that speaks the same protocol:
+variable), bootstraps the stores with `e2e/bootstrap-store.sh`, and runs
+the suite. The binary has to speak the protocol version the extension
+expects, so the suite fails against a release that predates it. Run it
+locally with `PASEJO_BIN` pointing at a `pasejo` build that speaks the
+same protocol. The bootstrap writes its configuration, identity and
+stores into the directory you name, so keep that apart from your own
+pasejo configuration:
 
 ```sh
 ./package.sh                                   # build dist/chromium first
 npx playwright install chromium                # one-time
-PASEJO_BIN="$(command -v pasejo)" \
-  PASEJO_CONFIG=/path/to/test-config.toml \
-  npm run test:e2e
+export PASEJO_BIN="$(command -v pasejo)"
+PASEJO_CONFIG="$(e2e/bootstrap-store.sh "$(mktemp -d)")" npm run test:e2e
 ```
 
 ## Loading the unpacked extension
