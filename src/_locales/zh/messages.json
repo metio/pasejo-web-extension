@@ -210,6 +210,21 @@
     "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
     "placeholders": { "name": { "content": "$1" } }
   },
+  "statusFillRefusedHidden": {
+    "message": "未填写任何内容。$NAME$ 的登录字段在此页面上被隐藏。",
+    "description": "Shown when nothing was filled because the page hides the field the credential would go into.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFillRefusedOffscreen": {
+    "message": "未填写任何内容。$NAME$ 的登录字段位于页面可见区域之外。",
+    "description": "Shown when nothing was filled because the field the credential would go into cannot be scrolled into view.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFillRefusedCovered": {
+    "message": "未填写任何内容。页面上有元素覆盖在 $NAME$ 的登录字段上。",
+    "description": "Shown when nothing was filled because another element lies over the field the credential would go into.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
   "statusOtpShownSuffix": {
     "message": " 一次性代码显示在下方。",
     "description": "Appended to a fill status when the released one-time code was not filled and is shown on the result row instead."

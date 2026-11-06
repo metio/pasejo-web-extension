@@ -60,12 +60,11 @@ function reloadFiller() {
   return lastReady();
 }
 
-// Force a non-zero bounding rect and a "visible" computed style so
-// `isInteractable` accepts the element. happy-dom otherwise gives every
-// detached and freshly-attached element a 0×0 rect, which the picker
-// reads as "not interactable" and ignores. Optionally supplies the
-// rect's top/left so visibility-score tests can place inputs inside or
-// outside the viewport deliberately.
+// An input with a box in the test layout, so the fill script sees it as
+// rendered. happy-dom otherwise gives every element a 0×0 rect, which
+// the script reads as hidden. Optionally supplies the rect's top/left so
+// visibility-score tests can place inputs inside or outside the
+// viewport deliberately.
 function makeVisibleInput(
   type,
   { props = {}, rect = {}, attached = true } = {},
@@ -86,20 +85,129 @@ function makeVisibleInput(
   return input;
 }
 
+// happy-dom has no layout, so the tests carry a small one of their own:
+// every element `stubRect` registers has a fixed box in page
+// coordinates, the viewport scrolls over them, and the topmost box
+// registered last wins a hit test. Boxes without an explicit `top` stack
+// below each other so inputs of one form never overlap.
+const layout = {
+  scrollX: 0,
+  scrollY: 0,
+  nextTop: 0,
+  boxes: [],
+};
+
 function stubRect(el, rect = {}) {
+  const width = rect.width ?? 200;
+  const height = rect.height ?? 30;
+  let top = rect.top;
+  if (top === undefined) {
+    top = layout.nextTop;
+    layout.nextTop += height + 10;
+  }
+  const left = rect.left ?? 0;
+  const box = {
+    top,
+    left,
+    bottom: rect.bottom ?? top + height,
+    right: rect.right ?? left + width,
+    width,
+    height,
+  };
   Object.defineProperty(el, "getBoundingClientRect", {
     value: () => ({
-      width: 200,
-      height: 30,
-      top: 0,
-      left: 0,
-      right: 200,
-      bottom: 30,
-      ...rect,
+      width: box.width,
+      height: box.height,
+      top: box.top - layout.scrollY,
+      bottom: box.bottom - layout.scrollY,
+      left: box.left - layout.scrollX,
+      right: box.right - layout.scrollX,
     }),
     configurable: true,
   });
+  layout.boxes.push(el);
   return el;
+}
+
+// Retargets `el` against `root` the way `elementFromPoint` does: an
+// element inside a shadow tree `root` cannot see is replaced by that
+// tree's host, repeatedly.
+function retarget(el, root) {
+  let node = el;
+  for (
+    let tree = node.getRootNode();
+    tree !== root && tree instanceof ShadowRoot;
+    tree = node.getRootNode()
+  ) {
+    node = tree.host;
+  }
+  return node;
+}
+
+// The topmost connected registered element whose box holds the
+// viewport point (x, y), retargeted against `root`, or null.
+function hitTest(root, x, y) {
+  for (let i = layout.boxes.length - 1; i >= 0; i -= 1) {
+    const el = layout.boxes[i];
+    if (!el.isConnected) {
+      continue;
+    }
+    const r = el.getBoundingClientRect();
+    if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) {
+      return retarget(el, root);
+    }
+  }
+  return null;
+}
+
+// Scrolls the viewport so `el`'s centre lands in the middle, as far as
+// the page allows: scroll offsets never go below zero.
+function scrollToCentre(el) {
+  const r = el.getBoundingClientRect();
+  layout.scrollX = Math.max(
+    0,
+    layout.scrollX + r.left + r.width / 2 - window.innerWidth / 2,
+  );
+  layout.scrollY = Math.max(
+    0,
+    layout.scrollY + r.top + r.height / 2 - window.innerHeight / 2,
+  );
+}
+
+function installLayout() {
+  layout.scrollX = 0;
+  layout.scrollY = 0;
+  layout.nextTop = 0;
+  layout.boxes = [];
+  document.elementFromPoint = (x, y) => hitTest(document, x, y);
+  ShadowRoot.prototype.elementFromPoint = function elementFromPoint(x, y) {
+    return hitTest(this, x, y);
+  };
+  vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(
+    function scrollIntoView() {
+      scrollToCentre(this);
+    },
+  );
+}
+
+function uninstallLayout() {
+  delete document.elementFromPoint;
+  delete ShadowRoot.prototype.elementFromPoint;
+}
+
+// An element laid over `target`'s box, the way a page would put a
+// transparent overlay over a field to catch the user's click.
+function coverWith(target, tag = "div") {
+  const overlay = document.createElement(tag);
+  document.body.appendChild(overlay);
+  const r = target.getBoundingClientRect();
+  stubRect(overlay, {
+    top: r.top + layout.scrollY,
+    left: r.left + layout.scrollX,
+    width: r.width,
+    height: r.height,
+  });
+  return overlay;
 }
 
 // happy-dom validates CSS colours strictly: it rejects keywords real
@@ -158,6 +266,7 @@ describe("fill.js content script", () => {
     api = makeApiMock();
     globalThis.chrome = api;
     document.body.innerHTML = "";
+    installLayout();
     posted = [];
     api.runtime.onConnect.addListener((port) => {
       port.onMessage.addListener((message) => posted.push(message));
@@ -168,6 +277,7 @@ describe("fill.js content script", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    uninstallLayout();
     delete globalThis.browser;
     delete globalThis.chrome;
     document.body.innerHTML = "";
@@ -453,7 +563,7 @@ describe("fill.js content script", () => {
     });
   });
 
-  describe("findPasswordInput ranking", () => {
+  describe("password field ranking", () => {
     it("prefers the currently focused password input", async () => {
       const pwdA = makeVisibleInput("password", {
         rect: { top: 1000, bottom: 1030 },
@@ -488,7 +598,7 @@ describe("fill.js content script", () => {
     });
   });
 
-  describe("findUsernameInputFor", () => {
+  describe("username field next to a password field", () => {
     it("skips disabled, readonly, and hidden inputs when looking for a username", async () => {
       document.body.innerHTML = "<form id='f'></form>";
       const form = document.getElementById("f");
@@ -601,7 +711,7 @@ describe("fill.js content script", () => {
     });
   });
 
-  describe("findStandaloneUsernameInput (partial-fill path)", () => {
+  describe("standalone username field (partial-fill path)", () => {
     it("prefers the currently focused username candidate", async () => {
       const a = makeVisibleInput("email", {
         props: { id: "a", name: "email" },
@@ -817,7 +927,7 @@ describe("fill.js content script", () => {
     });
   });
 
-  describe("isInteractable", () => {
+  describe("hidden candidates next to visible ones", () => {
     it("skips inputs whose computed style is hidden", async () => {
       const hiddenStyled = makeVisibleInput("password");
       hiddenStyled.style.visibility = "hidden";
@@ -854,6 +964,351 @@ describe("fill.js content script", () => {
       });
       expect(real.value).toBe("p");
       expect(zeroSize.value).toBe("");
+    });
+  });
+
+  describe("visible-field check at fill time", () => {
+    // Fills a lone password field and returns the reply plus the field.
+    async function fillLonePassword(prepare) {
+      const input = makeVisibleInput("password");
+      prepare(input);
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      return { reply, input };
+    }
+
+    // Wraps `el` in a fresh parent styled with `style`, kept in place.
+    function wrap(el, style) {
+      const parent = document.createElement("div");
+      parent.setAttribute("style", style);
+      el.replaceWith(parent);
+      parent.appendChild(el);
+      return parent;
+    }
+
+    it("fills a field that is rendered, in view and on top", async () => {
+      const { reply, input } = await fillLonePassword(() => {});
+      expect(reply).toEqual({
+        ok: true,
+        filled: { username: false, password: true, otp: false },
+      });
+      expect(input.value).toBe("p");
+    });
+
+    it("refuses a field with a zero-sized box", async () => {
+      const input = makeVisibleInput("password", { rect: { width: 0 } });
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply).toMatchObject({ ok: false, reason: "hidden" });
+      expect(input.value).toBe("");
+    });
+
+    it("refuses a field styled display:none", async () => {
+      const { reply, input } = await fillLonePassword((el) => {
+        el.style.display = "none";
+      });
+      expect(reply).toMatchObject({ ok: false, reason: "hidden" });
+      expect(input.value).toBe("");
+    });
+
+    it("refuses a field inside a display:none ancestor", async () => {
+      const { reply, input } = await fillLonePassword((el) =>
+        wrap(el, "display: none"),
+      );
+      expect(reply).toMatchObject({ ok: false, reason: "hidden" });
+      expect(input.value).toBe("");
+    });
+
+    it("refuses a field whose ancestor is visibility:hidden", async () => {
+      const { reply } = await fillLonePassword((el) =>
+        wrap(el, "visibility: hidden"),
+      );
+      expect(reply).toMatchObject({ ok: false, reason: "hidden" });
+    });
+
+    it("refuses a field styled visibility:collapse", async () => {
+      const { reply } = await fillLonePassword((el) => {
+        el.style.visibility = "collapse";
+      });
+      expect(reply).toMatchObject({ ok: false, reason: "hidden" });
+    });
+
+    it("refuses a fully transparent field", async () => {
+      const { reply, input } = await fillLonePassword((el) => {
+        el.style.opacity = "0";
+      });
+      expect(reply).toMatchObject({ ok: false, reason: "hidden" });
+      expect(input.value).toBe("");
+    });
+
+    it("refuses a field inside a fully transparent ancestor", async () => {
+      const { reply } = await fillLonePassword((el) =>
+        wrap(el, "opacity: 0"),
+      );
+      expect(reply).toMatchObject({ ok: false, reason: "hidden" });
+    });
+
+    it("refuses a field whose ancestors multiply to a near-invisible opacity", async () => {
+      const { reply } = await fillLonePassword((el) => {
+        wrap(wrap(el, "opacity: 0.3"), "opacity: 0.3");
+      });
+      expect(reply).toMatchObject({ ok: false, reason: "hidden" });
+    });
+
+    it("fills a half-transparent field", async () => {
+      const { reply, input } = await fillLonePassword((el) =>
+        wrap(el, "opacity: 0.5"),
+      );
+      expect(reply.ok).toBe(true);
+      expect(input.value).toBe("p");
+    });
+
+    it("refuses a field the browser itself reports as not visible", async () => {
+      const { reply } = await fillLonePassword((el) => {
+        el.checkVisibility = vi.fn(() => false);
+      });
+      expect(reply).toMatchObject({ ok: false, reason: "hidden" });
+    });
+
+    it("asks the browser about opacity and visibility, not only display", async () => {
+      const { reply, input } = await fillLonePassword((el) => {
+        el.checkVisibility = vi.fn(() => true);
+      });
+      expect(reply.ok).toBe(true);
+      expect(input.checkVisibility).toHaveBeenCalledWith({
+        opacityProperty: true,
+        visibilityProperty: true,
+      });
+    });
+
+    it("refuses a field inside a hidden shadow host", async () => {
+      const { host, input } = attachShadowInput("password");
+      host.style.display = "none";
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply).toMatchObject({ ok: false, reason: "hidden" });
+      expect(input.value).toBe("");
+    });
+
+    it("judges a slotted field by the slot it renders in", async () => {
+      const host = document.createElement("div");
+      const shadow = host.attachShadow({ mode: "open" });
+      const hiddenWrapper = document.createElement("div");
+      hiddenWrapper.style.display = "none";
+      const slot = document.createElement("slot");
+      hiddenWrapper.appendChild(slot);
+      shadow.appendChild(hiddenWrapper);
+      const input = makeVisibleInput("password", { attached: false });
+      host.appendChild(input);
+      document.body.appendChild(host);
+      Object.defineProperty(input, "assignedSlot", { value: slot });
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply).toMatchObject({ ok: false, reason: "hidden" });
+    });
+
+    it("scrolls a field below the fold into view and fills it", async () => {
+      const input = makeVisibleInput("password", {
+        rect: { top: 2000, height: 30 },
+      });
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply.ok).toBe(true);
+      expect(input.scrollIntoView).toHaveBeenCalledWith({
+        block: "center",
+        inline: "center",
+        behavior: "instant",
+      });
+      expect(input.value).toBe("p");
+    });
+
+    it("does not scroll a field that is already in view", async () => {
+      const input = makeVisibleInput("password");
+      await callListener(api, { type: "fill", password: "p" });
+      expect(input.scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it("refuses a field placed where no scrolling can reach", async () => {
+      for (const rect of [{ left: -9999 }, { top: -9999 }, { left: 5000 }]) {
+        document.body.innerHTML = "";
+        const input = makeVisibleInput("password", { rect });
+        // A viewport that cannot scroll sideways keeps a far-right field out.
+        input.scrollIntoView.mockImplementationOnce(() => {});
+        const reply = await callListener(api, {
+          type: "fill",
+          password: "p",
+        });
+        expect(reply).toMatchObject({ ok: false, reason: "offscreen" });
+        expect(input.value).toBe("");
+      }
+    });
+
+    it("refuses a field covered by another element", async () => {
+      const input = makeVisibleInput("password");
+      coverWith(input);
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply).toMatchObject({ ok: false, reason: "covered" });
+      expect(input.value).toBe("");
+    });
+
+    it("refuses a field nothing at all is hit at", async () => {
+      const input = makeVisibleInput("password");
+      document.elementFromPoint = () => null;
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply).toMatchObject({ ok: false, reason: "covered" });
+      expect(input.value).toBe("");
+    });
+
+    it("fills a field whose own label lies over it", async () => {
+      const input = makeVisibleInput("password", { props: { id: "pw" } });
+      const label = coverWith(input, "label");
+      label.htmlFor = "pw";
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply.ok).toBe(true);
+      expect(input.value).toBe("p");
+    });
+
+    it("refuses a field another field's label lies over", async () => {
+      const input = makeVisibleInput("password", { props: { id: "pw" } });
+      makeVisibleInput("text", { props: { id: "other" } });
+      const label = coverWith(input, "label");
+      label.htmlFor = "other";
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply).toMatchObject({ ok: false, reason: "covered" });
+    });
+
+    it("finds a field on top inside nested open shadow roots", async () => {
+      const outer = document.createElement("div");
+      const outerShadow = outer.attachShadow({ mode: "open" });
+      const inner = document.createElement("div");
+      const innerShadow = inner.attachShadow({ mode: "open" });
+      const input = document.createElement("input");
+      input.type = "password";
+      innerShadow.appendChild(input);
+      outerShadow.appendChild(inner);
+      document.body.appendChild(outer);
+      stubRect(input);
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply.ok).toBe(true);
+      expect(input.value).toBe("p");
+    });
+
+    it("refuses a shadow field covered by an element inside the same shadow root", async () => {
+      const { shadow, input } = attachShadowInput("password");
+      const overlay = document.createElement("div");
+      shadow.appendChild(overlay);
+      const r = input.getBoundingClientRect();
+      stubRect(overlay, { top: r.top, left: r.left });
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply).toMatchObject({ ok: false, reason: "covered" });
+    });
+
+    it("refuses a shadow field when the shadow root reports its own host at the point", async () => {
+      const { host, input } = attachShadowInput("password");
+      stubRect(host, input.getBoundingClientRect());
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply).toMatchObject({ ok: false, reason: "covered" });
+    });
+
+    it("refuses a shadow field when the shadow root reports nothing at the point", async () => {
+      const { shadow } = attachShadowInput("password");
+      shadow.elementFromPoint = () => null;
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply).toMatchObject({ ok: false, reason: "covered" });
+    });
+
+    it("passes over a decoy and fills the field the user sees", async () => {
+      const decoy = makeVisibleInput("password");
+      decoy.style.opacity = "0";
+      const real = makeVisibleInput("password");
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply.ok).toBe(true);
+      expect(real.value).toBe("p");
+      expect(decoy.value).toBe("");
+    });
+
+    it("passes over a covered focused field for a visible one", async () => {
+      const focused = makeVisibleInput("password");
+      coverWith(focused);
+      const other = makeVisibleInput("password");
+      focused.focus();
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply.ok).toBe(true);
+      expect(other.value).toBe("p");
+      expect(focused.value).toBe("");
+    });
+
+    it("leaves a hidden username field empty while filling the visible password", async () => {
+      document.body.innerHTML = "<form id='f'></form>";
+      const form = document.getElementById("f");
+      const username = makeVisibleInput("text", {
+        props: { name: "username" },
+        attached: false,
+      });
+      username.style.opacity = "0";
+      form.appendChild(username);
+      const password = makeVisibleInput("password", { attached: false });
+      form.appendChild(password);
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "p",
+      });
+      expect(reply.filled).toEqual({
+        username: false,
+        password: true,
+        otp: false,
+      });
+      expect(username.value).toBe("");
+    });
+
+    it("leaves a covered one-time-code field empty", async () => {
+      const otp = makeVisibleInput("text", {
+        props: { autocomplete: "one-time-code" },
+      });
+      coverWith(otp);
+      const password = makeVisibleInput("password");
+      const reply = await callListener(api, {
+        type: "fill",
+        password: "p",
+        otp: "123456",
+      });
+      expect(reply.filled.otp).toBe(false);
+      expect(otp.value).toBe("");
+      expect(password.value).toBe("p");
+    });
+
+    it("fills only the username of a multi-step page whose password field is a transparent decoy", async () => {
+      const username = makeVisibleInput("email", {
+        props: { name: "email" },
+      });
+      const decoy = makeVisibleInput("password");
+      decoy.style.opacity = "0";
+      const reply = await callListener(api, {
+        type: "fill",
+        username: "alice",
+        password: "p",
+      });
+      expect(reply.filled).toEqual({
+        username: true,
+        password: false,
+        otp: false,
+      });
+      expect(username.value).toBe("alice");
+      expect(decoy.value).toBe("");
+    });
+
+    it("reports why the best-ranked password field was refused", async () => {
+      const covered = makeVisibleInput("password");
+      coverWith(covered);
+      covered.focus();
+      const hidden = makeVisibleInput("password");
+      hidden.style.opacity = "0";
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply).toMatchObject({ ok: false, reason: "covered" });
+      expect(reply.error).toMatch(/covered/);
+    });
+
+    it("keeps the plain no-field error when the page has no candidate at all", async () => {
+      const reply = await callListener(api, { type: "fill", password: "p" });
+      expect(reply.ok).toBe(false);
+      expect(reply.reason).toBeUndefined();
+      expect(reply.error).toMatch(/No password input found/);
     });
   });
 

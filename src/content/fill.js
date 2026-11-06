@@ -24,109 +24,220 @@
   // colour on every page.
   const PULSE_OUTLINE_COLOR = "AccentColor";
 
+  // Fills what the page offers: the password field, the username field
+  // that goes with it (or, on the first step of a multi-step login, a
+  // username field alone), and a one-time-code field. Each field is the
+  // best-ranked candidate the user can see (see `fillBlocker`). Returns
+  // `{filled}` with what went in; when nothing could be filled,
+  // `{refused}` with the reason the first candidate tried (password
+  // fields go first) was passed over, or a throw when the page offers no
+  // candidate at all.
   function fill(username, password, otp) {
     // Single deep traversal: collect every `<input>` reachable from
     // the document, including across open shadow boundaries. The
-    // find* helpers below filter this pool by type / role rather
-    // than walking the DOM a second time. Two traversal-deep walks
-    // used to fire per fill in the form-less and standalone-username
-    // paths; one is enough.
+    // rank* helpers below filter this pool by type / role rather
+    // than walking the DOM a second time.
     const allInputs = queryAllDeep(document, "input");
-    // A one-time code can sit on the same page as the credentials or on a
-    // standalone 2FA step, so resolve it up front and let whichever path
-    // below returns report whether a field actually received it.
-    const otpFilled = otp ? fillOtp(allInputs, otp) : false;
-    const passwordInput = findPasswordInput(allInputs);
-    if (!passwordInput) {
-      // Multi-step login pages (email page → password page) have no
-      // password input on the email step. Fall back to a username-only
-      // fill so the popup can still help the user past the first step,
-      // and report `password: false` so the popup can tell them to
-      // reopen on the next page for the password fill.
-      if (username) {
-        const usernameInput = findStandaloneUsernameInput(allInputs);
-        if (usernameInput) {
-          assignInput(usernameInput, username);
-          return {
-            filled: { username: true, password: false, otp: otpFilled },
-          };
-        }
-      }
-      // A standalone 2FA page has neither a password nor a username field;
-      // succeed if the OTP landed, otherwise keep the historical "no
-      // password" error the popup already surfaces.
-      if (otpFilled) {
-        return { filled: { username: false, password: false, otp: true } };
+    const refusals = [];
+    const passwordInput = firstFillable(
+      rankPasswordInputs(allInputs),
+      refusals,
+    );
+    // Without a password field the page is the first step of a
+    // multi-step login (email page → password page): the username goes
+    // in alone and `password: false` tells the popup to have the user
+    // reopen it on the next page.
+    const usernameInput = username
+      ? firstFillable(
+          passwordInput
+            ? rankUsernameInputsFor(passwordInput, allInputs)
+            : rankStandaloneUsernameInputs(allInputs),
+          refusals,
+        )
+      : null;
+    // A one-time code can sit on the same page as the credentials or on
+    // a standalone 2FA step.
+    const otpInput = otp
+      ? firstFillable(rankOtpInputs(allInputs), refusals)
+      : null;
+    if (!passwordInput && !usernameInput && !otpInput) {
+      if (refusals.length > 0) {
+        return { refused: refusals[0] };
       }
       throw new Error("No password input found on this page");
     }
-    const usernameInput = findUsernameInputFor(passwordInput, allInputs);
-
-    if (usernameInput && username) {
+    if (otpInput) {
+      assignInput(otpInput, otp);
+    }
+    if (usernameInput) {
       assignInput(usernameInput, username);
     }
-    if (password) {
+    if (passwordInput && password) {
       assignInput(passwordInput, password);
     }
     return {
       filled: {
-        username: Boolean(usernameInput && username),
-        password: Boolean(password),
-        otp: otpFilled,
+        username: Boolean(usernameInput),
+        password: Boolean(passwordInput && password),
+        otp: Boolean(otpInput),
       },
     };
   }
 
-  // Fills the first one-time-code field with `code`; returns whether a field
-  // was found. Kept separate so both the credentials path and the standalone
-  // 2FA path can place the code.
-  function fillOtp(allInputs, code) {
-    const otpInput = findOtpInput(allInputs);
-    if (!otpInput) {
-      return false;
+  // The first of `ranked` that can take a fill, or null. Every candidate
+  // passed over adds its reason to `refusals`.
+  function firstFillable(ranked, refusals) {
+    for (const el of ranked) {
+      const blocker = fillBlocker(el);
+      if (blocker === null) {
+        return el;
+      }
+      refusals.push(blocker);
     }
-    assignInput(otpInput, code);
-    return true;
+    return null;
   }
 
-  // The one-time-code field to fill, or null. The explicit web standard
-  // (`autocomplete="one-time-code"`) wins; otherwise the most-visible input
-  // that names a one-time code is taken.
-  function findOtpInput(allInputs) {
-    const candidates = allInputs.filter(
-      (el) => isInteractable(el) && looksLikeOtp(el),
+  // Effective opacity (the product over the element and its ancestors)
+  // below which a field counts as invisible.
+  const MIN_EFFECTIVE_OPACITY = 0.1;
+
+  // Why `el` cannot take a credential right now, or null when it can:
+  // "hidden" when it or an ancestor is not rendered, has no size or is
+  // (nearly) transparent, "offscreen" when scrolling cannot bring its
+  // centre into the viewport, "covered" when another element is what
+  // the user would hit at its centre. A page that hides a field or lays
+  // something over it would collect a credential the user cannot see go
+  // in.
+  function fillBlocker(el) {
+    if (isConcealed(el)) {
+      return "hidden";
+    }
+    if (!isCentreInViewport(el)) {
+      el.scrollIntoView({
+        block: "center",
+        inline: "center",
+        behavior: "instant",
+      });
+      if (!isCentreInViewport(el)) {
+        return "offscreen";
+      }
+    }
+    if (!isTopmostAtCentre(el)) {
+      return "covered";
+    }
+    return null;
+  }
+
+  function isConcealed(el) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      return true;
+    }
+    const shown = el.checkVisibility?.({
+      opacityProperty: true,
+      visibilityProperty: true,
+    });
+    if (shown === false) {
+      return true;
+    }
+    // `visibility` inherits, so the element's own computed value already
+    // reflects its ancestors; `display` and `opacity` do not.
+    const visibility = window.getComputedStyle(el).visibility;
+    if (visibility === "hidden" || visibility === "collapse") {
+      return true;
+    }
+    let opacity = 1;
+    for (let node = el; node; node = renderedParent(node)) {
+      const style = window.getComputedStyle(node);
+      if (style.display === "none") {
+        return true;
+      }
+      const own = Number.parseFloat(style.opacity);
+      if (!Number.isNaN(own)) {
+        opacity *= own;
+      }
+    }
+    return opacity < MIN_EFFECTIVE_OPACITY;
+  }
+
+  // The element `node` renders inside: the slot a light-DOM child is
+  // assigned to, else its parent element, else the host of its shadow
+  // root, else null at the top of the document.
+  function renderedParent(node) {
+    return (
+      node.assignedSlot ?? node.parentElement ?? node.getRootNode().host ?? null
     );
-    const standard = candidates.find(
+  }
+
+  function centreOf(el) {
+    const rect = el.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  }
+
+  function isCentreInViewport(el) {
+    const { x, y } = centreOf(el);
+    return x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight;
+  }
+
+  // Whether `el`, or a label that belongs to it, is what the user would
+  // hit at `el`'s centre. The document reports only the outermost shadow
+  // host at a point, so the hit descends through open shadow roots.
+  function isTopmostAtCentre(el) {
+    const { x, y } = centreOf(el);
+    let hit = document.elementFromPoint(x, y);
+    while (hit && hit !== el && hit.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (inner === null || inner === hit) {
+        break;
+      }
+      hit = inner;
+    }
+    return hit === el || hit?.closest("label")?.control === el;
+  }
+
+  // The one-time-code fields in fill order: those carrying the explicit
+  // web standard (`autocomplete="one-time-code"`) first, then the other
+  // inputs that name a one-time code, most visible first.
+  function rankOtpInputs(allInputs) {
+    const candidates = allInputs.filter(
+      (el) => acceptsInput(el) && looksLikeOtp(el),
+    );
+    const standard = candidates.filter(
       (el) => el.autocomplete === "one-time-code",
     );
-    if (standard) {
-      return standard;
-    }
-    candidates.sort((a, b) => visibilityScore(b) - visibilityScore(a));
-    return candidates[0] ?? null;
+    const rest = candidates.filter((el) => !standard.includes(el));
+    return [...standard, ...byVisibility(rest)];
   }
 
-  function findPasswordInput(allInputs) {
-    const candidates = allInputs.filter(
-      (el) => el.type === "password" && isInteractable(el),
+  // Password fields in fill order: the focused one, then by viewport
+  // visibility so a "change password" form deep in the page does not
+  // win over a visible login form above the fold.
+  function rankPasswordInputs(allInputs) {
+    return focusedFirst(
+      allInputs.filter((el) => el.type === "password" && acceptsInput(el)),
     );
-    if (candidates.length === 0) {
-      return null;
-    }
-    // Prefer the currently focused field. Otherwise rank by viewport
-    // visibility so a hidden-deep-in-the-page "change password" form
-    // doesn't win over a visible login form sitting above the fold.
-    const focused = activeElementDeep();
-    if (focused && candidates.includes(focused)) {
-      return focused;
-    }
-    candidates.sort((a, b) => visibilityScore(b) - visibilityScore(a));
-    return candidates[0];
   }
 
-  // Look for a username field that shares the password's form. Fall back
-  // to the previous visible input that looks like a username.
-  function findUsernameInputFor(passwordInput, allInputs) {
+  // `candidates` with the focused one first and the rest by viewport
+  // visibility.
+  function focusedFirst(candidates) {
+    const focused = activeElementDeep();
+    const rest = byVisibility(candidates.filter((el) => el !== focused));
+    return candidates.includes(focused) ? [focused, ...rest] : rest;
+  }
+
+  // `candidates` sorted by `visibilityScore`, most visible first; the
+  // sort is stable, so equally visible inputs keep document order.
+  function byVisibility(candidates) {
+    return [...candidates].sort(
+      (a, b) => visibilityScore(b) - visibilityScore(a),
+    );
+  }
+
+  // Username fields that go with `passwordInput`, in fill order: those
+  // sharing its form, or every input when it has none, closest preceding
+  // candidate first.
+  function rankUsernameInputsFor(passwordInput, allInputs) {
     const form = passwordInput.form;
     // `form.elements` only sees regular form-associated inputs, not
     // those buried in a shadow root inside the form. For the form
@@ -140,13 +251,10 @@
       ? Array.from(form.elements).filter((el) => el instanceof HTMLInputElement)
       : allInputs;
     const candidates = pool.filter(
-      (el) => el !== passwordInput && isInteractable(el) && looksLikeUsername(el),
+      (el) => el !== passwordInput && acceptsInput(el) && looksLikeUsername(el),
     );
-    if (candidates.length === 0) {
-      return null;
-    }
-    // If the password input came after a candidate in document order, prefer
-    // the closest preceding candidate; otherwise take the first.
+    // Candidates preceding the password input come first, the closest
+    // one leading; the rest follow in document order.
     // `compareDocumentPosition` returns 0 (DISCONNECTED) when the two
     // nodes live in different shadow trees, which makes both nodes look
     // "neither before nor after"; the `before` filter naturally drops
@@ -157,28 +265,16 @@
         el.compareDocumentPosition(passwordInput) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     );
-    if (before.length > 0) {
-      return before[before.length - 1];
-    }
-    return candidates[0];
+    const after = candidates.filter((el) => !before.includes(el));
+    return [...before.reverse(), ...after];
   }
 
-  // Standalone username search for pages with no password input (the
-  // first step of a multi-step login). Same focused → viewport-visible
-  // → first-in-document ranking as the password search.
-  function findStandaloneUsernameInput(allInputs) {
-    const candidates = allInputs.filter(
-      (el) => isInteractable(el) && looksLikeUsername(el),
+  // Username fields for pages with no password input (the first step of
+  // a multi-step login), in the same order as password fields.
+  function rankStandaloneUsernameInputs(allInputs) {
+    return focusedFirst(
+      allInputs.filter((el) => acceptsInput(el) && looksLikeUsername(el)),
     );
-    if (candidates.length === 0) {
-      return null;
-    }
-    const focused = activeElementDeep();
-    if (focused && candidates.includes(focused)) {
-      return focused;
-    }
-    candidates.sort((a, b) => visibilityScore(b) - visibilityScore(a));
-    return candidates[0];
   }
 
   // Recursive `querySelectorAll` that descends into every open shadow
@@ -324,7 +420,7 @@
   // localised sites): mis-filling a TOTP code into an unrelated field both
   // fails the login and leaks the current code, so precision matters more
   // than recall here. The web-standard `autocomplete="one-time-code"` is the
-  // strong primary signal handled in `findOtpInput`; these cover fields that
+  // strong primary signal handled in `rankOtpInputs`; these cover fields that
   // predate or omit it. Bare `code` / `token` are excluded as too broad
   // (coupon, area, zip, …).
   const OTP_HINTS = [
@@ -419,22 +515,10 @@
     return OTP_HINTS.some((hint) => haystack.includes(hint));
   }
 
-  function isInteractable(el) {
-    if (el.disabled || el.readOnly) {
-      return false;
-    }
-    if (el.type === "hidden") {
-      return false;
-    }
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) {
-      return false;
-    }
-    const style = window.getComputedStyle(el);
-    if (style.visibility === "hidden" || style.display === "none") {
-      return false;
-    }
-    return true;
+  // Whether `el` takes typed input at all. Whether the user can see it
+  // is `fillBlocker`'s question.
+  function acceptsInput(el) {
+    return !el.disabled && !el.readOnly && el.type !== "hidden";
   }
 
   // Frameworks like React track input values through the native setter;
@@ -503,7 +587,13 @@
         message.password ?? "",
         message.otp ?? "",
       );
-      reply = { ok: true, ...result };
+      reply = result.refused
+        ? {
+            ok: false,
+            reason: result.refused,
+            error: `The field to fill is ${result.refused}`,
+          }
+        : { ok: true, ...result };
     } catch (err) {
       reply = { ok: false, error: err?.message ?? String(err) };
     }

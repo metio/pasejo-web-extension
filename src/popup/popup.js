@@ -1024,6 +1024,8 @@ async function fillIntoActiveTab(match, row) {
     failure = "statusPageChanged";
   } else if (reply.noAccess) {
     failure = "statusNoPageAccess";
+  } else if (reply.reason) {
+    failure = FILL_REFUSAL_MESSAGE_IDS[reply.reason];
   } else if (reply.refused) {
     failure = "statusFillRefusedOtherSite";
   }
@@ -1062,7 +1064,9 @@ async function fillIntoActiveTab(match, row) {
 // injection outright (a browser-internal page, an add-on store),
 // `pageChanged` for step 2, `revealFailure` with the failed reveal's
 // outcome, or `refused` with the number of frames `isFrameAllowed`
-// rejected. Once a reveal succeeded, the reply carries its `credential`.
+// rejected and `reason`, the first reason a frame gave for leaving its
+// fields alone (see `FILL_REFUSAL_MESSAGE_IDS`). Once a reveal
+// succeeded, the reply carries its `credential`.
 async function fillAcrossFrames(page, reveal, isFrameAllowed) {
   const collector = createFrameCollector(page.tabId);
   frameCollector = collector;
@@ -1078,6 +1082,7 @@ async function fillAcrossFrames(page, reveal, isFrameAllowed) {
     }
     let refused = 0;
     let credential;
+    let reason;
     for (const frame of orderFramesForFill(frames)) {
       if (!(await isFrameAllowed(frame))) {
         refused += 1;
@@ -1097,8 +1102,14 @@ async function fillAcrossFrames(page, reveal, isFrameAllowed) {
       if (reply.ok) {
         return { ...reply, credential };
       }
+      if (
+        reason === undefined &&
+        Object.hasOwn(FILL_REFUSAL_MESSAGE_IDS, reply.reason)
+      ) {
+        reason = reply.reason;
+      }
     }
-    return { ok: false, refused, credential };
+    return { ok: false, refused, reason, credential };
   } finally {
     if (frameCollector === collector) {
       frameCollector = null;
@@ -1395,6 +1406,15 @@ const FRAME_HANDSHAKE_TIMEOUT_MS = 2_000;
 
 // How long one frame gets to answer a fill before the walk moves on.
 const FRAME_FILL_TIMEOUT_MS = 5_000;
+
+// Status message per reason the fill script gives for leaving a frame's
+// fields alone: the field it would fill is hidden, cannot be scrolled
+// into view, or lies under another element.
+const FILL_REFUSAL_MESSAGE_IDS = Object.freeze({
+  hidden: "statusFillRefusedHidden",
+  offscreen: "statusFillRefusedOffscreen",
+  covered: "statusFillRefusedCovered",
+});
 
 // Walks the full "pull a fresh store roster from the host, pick the
 // preferred entry for the current hostname, redraw the dropdown, and

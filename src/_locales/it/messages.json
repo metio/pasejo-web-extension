@@ -210,6 +210,21 @@
     "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
     "placeholders": { "name": { "content": "$1" } }
   },
+  "statusFillRefusedHidden": {
+    "message": "Nulla è stato compilato. Il campo di accesso per $NAME$ è nascosto in questa pagina.",
+    "description": "Shown when nothing was filled because the page hides the field the credential would go into.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFillRefusedOffscreen": {
+    "message": "Nulla è stato compilato. Il campo di accesso per $NAME$ è fuori dalla parte visibile della pagina.",
+    "description": "Shown when nothing was filled because the field the credential would go into cannot be scrolled into view.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFillRefusedCovered": {
+    "message": "Nulla è stato compilato. Qualcosa nella pagina copre il campo di accesso per $NAME$.",
+    "description": "Shown when nothing was filled because another element lies over the field the credential would go into.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
   "statusOtpShownSuffix": {
     "message": " Il codice monouso è mostrato qui sotto.",
     "description": "Appended to a fill status when the released one-time code was not filled and is shown on the result row instead."

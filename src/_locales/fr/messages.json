@@ -210,6 +210,21 @@
     "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
     "placeholders": { "name": { "content": "$1" } }
   },
+  "statusFillRefusedHidden": {
+    "message": "Rien n'a été rempli. Le champ de connexion pour $NAME$ est masqué sur cette page.",
+    "description": "Shown when nothing was filled because the page hides the field the credential would go into.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFillRefusedOffscreen": {
+    "message": "Rien n'a été rempli. Le champ de connexion pour $NAME$ se trouve hors de la partie visible de la page.",
+    "description": "Shown when nothing was filled because the field the credential would go into cannot be scrolled into view.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFillRefusedCovered": {
+    "message": "Rien n'a été rempli. Un élément de la page recouvre le champ de connexion pour $NAME$.",
+    "description": "Shown when nothing was filled because another element lies over the field the credential would go into.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
   "statusOtpShownSuffix": {
     "message": " Son code à usage unique est affiché ci-dessous.",
     "description": "Appended to a fill status when the released one-time code was not filled and is shown on the result row instead."

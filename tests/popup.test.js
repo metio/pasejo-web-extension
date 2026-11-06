@@ -3245,6 +3245,58 @@ describe("popup.js", () => {
     });
   });
 
+  describe("fields the page hides or covers", () => {
+    it("keeps the first known reason a frame gave for refusing the fill", async () => {
+      const { api, popup } = await setUp();
+      stubFrames(api, [
+        { frameId: 0, fill: { ok: false, reason: "bogus" } },
+        { frameId: 1, fill: { ok: false, reason: "covered" } },
+        { frameId: 2, fill: { ok: false, reason: "hidden" } },
+      ]);
+      const reply = await popup.fillAcrossFrames(PAGE, revealAs(), allowAll);
+      expect(reply).toMatchObject({ ok: false, reason: "covered" });
+    });
+
+    it("drops a reason it has no message for", async () => {
+      const { api, popup } = await setUp();
+      stubFrames(api, [{ frameId: 0, fill: { ok: false, reason: "toString" } }]);
+      const reply = await popup.fillAcrossFrames(PAGE, revealAs(), allowAll);
+      expect(reply.reason).toBeUndefined();
+    });
+
+    for (const [reason, text] of [
+      ["hidden", "Nothing filled. The login field for alice is hidden on this page."],
+      [
+        "offscreen",
+        "Nothing filled. The login field for alice is outside the visible part of the page.",
+      ],
+      [
+        "covered",
+        "Nothing filled. Something on the page lies over the login field for alice.",
+      ],
+    ]) {
+      it(`explains a fill refused because the field is ${reason}`, async () => {
+        const { api, popup } = await setUp();
+        stubFrames(api, [{ frameId: 0, fill: { ok: false, reason } }]);
+        await popup.fillIntoActiveTab({ name: "alice", store: "personal" });
+        expect(popup.elements.status.textContent).toBe(text);
+        expect(popup.elements.status.classList.contains("error")).toBe(true);
+        expect(popup.state.filling).toBe(false);
+      });
+    }
+
+    it("prefers the field's reason over skipped frames of other sites", async () => {
+      const { api, popup } = await setUp();
+      stubHost(api);
+      stubFrames(api, [
+        { frameId: 0, fill: { ok: false, reason: "covered" } },
+        { frameId: 1, url: "https://evil.test/", fill: { ok: true } },
+      ]);
+      await popup.fillIntoActiveTab({ name: "alice", store: "personal" });
+      expect(popup.elements.status.textContent).toMatch(/lies over the login field/);
+    });
+  });
+
   describe("fillIntoActiveTab: release at click time", () => {
     const match = Object.freeze({
       name: "example.com/alice",

@@ -210,6 +210,21 @@
     "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
     "placeholders": { "name": { "content": "$1" } }
   },
+  "statusFillRefusedHidden": {
+    "message": "No se rellenó nada. El campo de inicio de sesión para $NAME$ está oculto en esta página.",
+    "description": "Shown when nothing was filled because the page hides the field the credential would go into.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFillRefusedOffscreen": {
+    "message": "No se rellenó nada. El campo de inicio de sesión para $NAME$ está fuera de la parte visible de la página.",
+    "description": "Shown when nothing was filled because the field the credential would go into cannot be scrolled into view.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFillRefusedCovered": {
+    "message": "No se rellenó nada. Algo en la página está encima del campo de inicio de sesión para $NAME$.",
+    "description": "Shown when nothing was filled because another element lies over the field the credential would go into.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
   "statusOtpShownSuffix": {
     "message": " Su código de un solo uso se muestra abajo.",
     "description": "Appended to a fill status when the released one-time code was not filled and is shown on the result row instead."

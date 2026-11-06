@@ -210,6 +210,21 @@
     "description": "Shown when nothing was filled and frames from sites the credential does not match were skipped.",
     "placeholders": { "name": { "content": "$1" } }
   },
+  "statusFillRefusedHidden": {
+    "message": "Nichts ausgefüllt. Das Anmeldefeld für $NAME$ ist auf dieser Seite verborgen.",
+    "description": "Shown when nothing was filled because the page hides the field the credential would go into.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFillRefusedOffscreen": {
+    "message": "Nichts ausgefüllt. Das Anmeldefeld für $NAME$ liegt außerhalb des sichtbaren Bereichs der Seite.",
+    "description": "Shown when nothing was filled because the field the credential would go into cannot be scrolled into view.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
+  "statusFillRefusedCovered": {
+    "message": "Nichts ausgefüllt. Etwas auf der Seite liegt über dem Anmeldefeld für $NAME$.",
+    "description": "Shown when nothing was filled because another element lies over the field the credential would go into.",
+    "placeholders": { "name": { "content": "$1" } }
+  },
   "statusOtpShownSuffix": {
     "message": " Der Einmalcode wird unten angezeigt.",
     "description": "Appended to a fill status when the released one-time code was not filled and is shown on the result row instead."
