@@ -327,9 +327,14 @@ for the per-permission breakdown.
 
 ---
 
-# Developing
+## Developing
 
-## Building locally
+The toolchain comes from [breto](https://github.com/metio/breto):
+`eval "$(breto env)"` in this directory puts node, npm and the Java runtime
+the model check needs on `PATH`, at the versions CI uses, and
+`breto run ci-lint` runs the lints CI runs.
+
+### Building locally
 
 ```sh
 ./package.sh        # produces:
@@ -350,17 +355,23 @@ that the hashes agree.
 Lint the Firefox bundle before submission:
 
 ```sh
-web-ext lint --source-dir=dist/firefox
+npx web-ext lint --source-dir=dist/firefox
 ```
 
-CI runs the same `package.sh` + `web-ext lint` on every PR and
-publishes the artifacts under the workflow run. Push a `vX.Y.Z` tag to
+Every pull request runs two workflows. `Baseline` runs the checks from
+[metio/ci](https://github.com/metio/ci) that every repository runs: a
+secret scan, the sign-off check, REUSE compliance and the workflow
+policies. `Verify` runs the lints, the unit suite, the build with
+`web-ext lint`, the model checks and the end-to-end suite, and publishes
+the archives under the workflow run. Its `Verify` job passes only when
+every other job passed or was skipped, so `Baseline` and `Verify` are the
+two required checks. Push a `vX.Y.Z` tag to
 trigger the release workflow, which runs `./package.sh X.Y.Z`, signs
 `SHA256SUMS` with cosign keyless, and attaches the archives,
 `SHA256SUMS` and `SHA256SUMS.bundle` to a GitHub Release (see
 *Verifying a release* above).
 
-## Tests
+### Tests
 
 The unit suite lives under `tests/`. It uses
 [Vitest](https://vitest.dev) on top of
@@ -386,7 +397,7 @@ Coverage output lands in `coverage/` (gitignored). The default
 `lcov` + HTML reporters write an `index.html` you can open to navigate
 to any uncovered branch.
 
-### End-to-end tests
+#### End-to-end tests
 
 `e2e/` holds a Playwright suite (`npm run test:e2e`) that drives a
 headless Chromium with the unpacked `dist/chromium` build loaded and the
@@ -424,7 +435,7 @@ reachable, and that cross-origin frames stay out of reach under
 `activeTab` alone. The manual checklist below covers those. Firefox is not
 covered by the suite either.
 
-The `End-to-end` CI workflow downloads a released `pasejo` binary (the
+The `Browser e2e` job of `Verify` downloads a released `pasejo` binary (the
 latest release, or the tag in the `PASEJO_HOST_VERSION` repository
 variable), bootstraps the stores with `e2e/bootstrap-store.sh`, and runs
 the suite. The binary has to speak the protocol version the extension
@@ -441,7 +452,7 @@ export PASEJO_BIN="$(command -v pasejo)"
 PASEJO_CONFIG="$(e2e/bootstrap-store.sh "$(mktemp -d)")" npm run test:e2e
 ```
 
-## Formal model
+### Formal model
 
 `model/` holds a [Quint](https://quint.sh) model of the extension's
 security-relevant behaviour. `tests/model-replay.test.js` replays traces
@@ -493,7 +504,8 @@ npm run model:replay     # the replay suite alone (npm test runs it too)
 npm run model:verify     # Apalache bounded model check of every invariant, 4 steps deep
 ```
 
-`model:verify` needs a Java runtime on `PATH` (checked with Temurin 25).
+`model:verify` needs a Java runtime on `PATH`; `breto env` provides
+Temurin 25.
 Quint downloads Apalache on first use, runs it as a local server on port
 8822 and writes `_apalache-out/` and `tmp/` into the working directory.
 A fill is 4 steps from the initial state (open the popup, the list
@@ -542,7 +554,7 @@ What the model and the replay do not cover:
 * Quint has no fairness, so "every stream ends" is checked as a safety
   property: the timers of an open stream end it when they fire.
 
-## Loading the unpacked extension
+### Loading the unpacked extension
 
 * **Firefox** — open `about:debugging#/runtime/this-firefox`, click
   *Load Temporary Add-on*, point it at `dist/firefox/manifest.json`.
@@ -554,7 +566,7 @@ What the model and the replay do not cover:
 
 Pin the extension to the toolbar so the popup is one click away.
 
-## Architecture
+### Architecture
 
 * The extension's background page connects to the `wtf.metio.pasejo`
   native-messaging host on demand. Single-store queries open one
@@ -591,7 +603,7 @@ explicit user click, and no credential ever lands in `storage` — the
 extension is purely a relay between the popup, the active tab, and
 `pasejo browser host`.
 
-## Manual test checklist
+### Manual test checklist
 
 The Playwright e2e suite (above) covers the fill paths automatically. This
 checklist exercises what it does not — the `activeTab` grant, Firefox,
@@ -650,9 +662,9 @@ browser's devtools console for the popup AND the background page
 before reporting — those are the only two places a JS-side error
 surfaces.
 
-## Repository layout
+### Repository layout
 
-```
+```text
 src/                 Source files served verbatim from the extension
   background.js      Service-worker / event-page driver for the native host
   popup/             Toolbar popup: query, results list, fill action
@@ -664,5 +676,5 @@ icons/               Toolbar icons; edit pasejo.svg, then run make-icons.sh
 package.sh           Builds dist/<browser>/, the reproducible archives and SHA256SUMS
 model/               Quint model of the popup, background and host (see Formal model)
 tests/               Vitest unit suite (happy-dom) and the model replay
-e2e/                 Playwright end-to-end suite (real Chrome + real host)
+e2e/                 Playwright end-to-end suite (headless Chromium + real host)
 ```

@@ -22,7 +22,7 @@ SPDX-FileCopyrightText = "The pasejo Authors"
 SPDX-License-Identifier = "0BSD"
 
 [[annotations]]
-path = "package-lock.json"
+path = ["package.json", "package-lock.json"]
 precedence = "override"
 SPDX-FileCopyrightText = "The pasejo Authors"
 SPDX-License-Identifier = "0BSD"

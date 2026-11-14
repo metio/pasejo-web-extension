@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: The pasejo Authors
+# SPDX-License-Identifier: 0BSD
+
+[default]
+# Punycode labels, such as the look-alike domains in the tests.
+extend-ignore-re = ["xn--[a-z0-9-]+"]
+
+[default.extend-words]
+alikes = "alikes"
+edn = "edn"
+mis = "mis"
+
+[default.extend-identifiers]
+OTPs = "OTPs"
+PNGs = "PNGs"
+
+[files]
+# The catalogs other than English hold translations the checker reads as
+# English misspellings.
+extend-exclude = [
+    "LICENSES/",
+    "src/_locales/de/",
+    "src/_locales/es/",
+    "src/_locales/fr/",
+    "src/_locales/it/",
+    "src/_locales/ja/",
+    "src/_locales/ko/",
+    "src/_locales/zh/",
+]

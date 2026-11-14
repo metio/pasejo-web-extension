@@ -1,60 +1,56 @@
 # SPDX-FileCopyrightText: The pasejo Authors
 # SPDX-License-Identifier: 0BSD
 
-name: Verify Commits
+# Every job installs the toolchain .breto.edn names: @lint brings node, @jdk25
+# the Java that Apalache runs on. `Verify` is the one required check and
+# passes only when every other job succeeded or was skipped.
+
+name: Verify
 on:
-  push:
-    branches: [ main ]
+  merge_group:
   pull_request:
-    branches: [ main ]
+    branches: [main]
+permissions:
+  contents: read
 
 jobs:
+  lint:
+    name: Lint
+    uses: metio/ci/.github/workflows/lint.yml@00adafd0fe1924f57325d9dd264d5d731fb099ad # 2026.11.4082509
+
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Node
-        uses: actions/setup-node@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: lts/*
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
+          persist-credentials: false
+      - uses: metio/ci/breto@00adafd0fe1924f57325d9dd264d5d731fb099ad # 2026.11.4082509
+        with:
+          registries: github:metio/toolchains
+      - run: npm ci
+      - run: npm test
 
   build:
-    name: Build + lint
+    name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Node
-        uses: actions/setup-node@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: lts/*
-
+          persist-credentials: false
+      - uses: metio/ci/breto@00adafd0fe1924f57325d9dd264d5d731fb099ad # 2026.11.4082509
+        with:
+          registries: github:metio/toolchains
+      - run: npm ci
       - name: Build unpacked extensions and archives
         run: ./package.sh
-
-      - name: Install web-ext
-        run: npm install --no-progress --silent -g web-ext
-
-      # `web-ext lint` is Firefox-targeted, so run it against the Firefox
-      # bundle only. The Chromium bundle is validated by `package.sh` (the
-      # zip step would fail if manifest.json or any referenced file were
-      # missing) and at install time by Chrome itself.
-      - name: Lint Firefox bundle
-        run: web-ext lint --source-dir=dist/firefox
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+      # web-ext lint targets Firefox. package.sh validates the Chromium
+      # bundle, since its zip step fails on a missing manifest or file.
+      - name: Lint the Firefox bundle
+        run: npx web-ext lint --source-dir=dist/firefox
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pasejo-extension
           path: |
@@ -66,46 +62,96 @@ jobs:
     name: Model
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    permissions:
-      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Set up Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: metio/ci/breto@00adafd0fe1924f57325d9dd264d5d731fb099ad # 2026.11.4082509
         with:
-          node-version: lts/*
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
+          registries: github:metio/toolchains
+      - run: npm ci
       - name: Type-check the model
         run: npm run model:typecheck
-
       - name: Run the model's scenario tests
         run: npm run model:test
-
       # No fixed seed: every run explores new paths. A violation prints the
       # seed that reproduces it.
       - name: Simulate the model and check its invariants
         run: npm run model:simulate
-
       - name: Replay fresh model traces against the extension
         run: |
           set -eu
           PASEJO_MODEL_SEED="0x$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
           echo "Replaying traces of seed ${PASEJO_MODEL_SEED}"
           PASEJO_MODEL_SEED="${PASEJO_MODEL_SEED}" PASEJO_MODEL_SAMPLES=200 npm run model:replay
-
-      - name: Set up Java for Apalache
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
-        with:
-          distribution: temurin
-          java-version: "25"
-
       - name: Bounded model check with Apalache
         run: npm run model:verify
+
+  e2e:
+    name: Browser e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: metio/ci/breto@00adafd0fe1924f57325d9dd264d5d731fb099ad # 2026.11.4082509
+        with:
+          registries: github:metio/toolchains
+      - run: npm ci
+      - name: Install Chromium and its system libraries
+        run: npx playwright install --with-deps chromium
+      # The host is a released binary, so this repository needs no Rust
+      # toolchain and the suite checks the extension against the host users
+      # run. The repository variable PASEJO_HOST_VERSION pins a release;
+      # without it the latest one is used.
+      - name: Download the pasejo host
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PINNED: ${{ vars.PASEJO_HOST_VERSION }}
+        run: |
+          set -eu
+          if [ -n "${PINNED}" ]; then
+            TAG="${PINNED}"
+          else
+            TAG="$(gh release view --repo metio/pasejo --json tagName --jq .tagName)"
+          fi
+          echo "Using pasejo ${TAG}"
+          gh release download "${TAG}" \
+            --repo metio/pasejo \
+            --pattern 'pasejo-x86_64-unknown-linux-gnu.tar.gz' \
+            --output pasejo.tar.gz
+          tar -xzf pasejo.tar.gz
+          chmod +x pasejo
+          echo "PASEJO_BIN=${PWD}/pasejo" >> "${GITHUB_ENV}"
+      # The script fails the job early if the stores come out wrong.
+      - name: Bootstrap the test stores
+        run: |
+          set -eu
+          CONFIG="$(e2e/bootstrap-store.sh "${RUNNER_TEMP}/pasejo")"
+          echo "PASEJO_CONFIG=${CONFIG}" >> "${GITHUB_ENV}"
+      - name: Build the Chromium extension bundle
+        run: ./package.sh
+      - name: Run the Playwright suite
+        run: npm run test:e2e
+      - name: Upload the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report
+          path: playwright-report/
+          if-no-files-found: ignore
+
+  verify:
+    name: Verify
+    needs: [lint, test, build, model, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check that every job succeeded or was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          bad=$(echo "$NEEDS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key)=\(.value.result)"')
+          [ -z "$bad" ] || { echo "::error::$bad"; exit 1; }

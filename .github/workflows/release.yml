@@ -51,16 +51,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: metio/ci/breto@00adafd0fe1924f57325d9dd264d5d731fb099ad # 2026.11.4082509
         with:
-          node-version: lts/*
-          package-manager-cache: false
+          registries: github:metio/toolchains
+          cache: "false"
+      - run: npm ci
       - name: Build extension
         run: ./package.sh "${GITHUB_REF_NAME#v}"
-      - name: Install web-ext
-        run: npm install --no-progress --silent -g web-ext
       - name: Lint Firefox bundle
-        run: web-ext lint --source-dir=dist/firefox
+        run: npx web-ext lint --source-dir=dist/firefox
   github:
     name: GitHub Release
     needs: [build, lint]
