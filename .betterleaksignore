@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: The pasejo Authors
+# SPDX-License-Identifier: 0BSD
+
+# The fixed age identity of pasejo's test fixtures, which the e2e stores are
+# encrypted to. It protects no real data.
+a62637c71ea049f1c0794bf628e837e460a1d9db:e2e/bootstrap-store.sh:age-secret-key:23
+
+# Placeholder passwords the unit tests put in host replies.
+2ff2377b3c585b0a24c07cd075dfb3bffdbf6cdd:tests/background.test.js:generic-password:264
+2ff2377b3c585b0a24c07cd075dfb3bffdbf6cdd:tests/background.test.js:generic-password:446
+2ff2377b3c585b0a24c07cd075dfb3bffdbf6cdd:tests/popup.test.js:generic-password:128
+2ff2377b3c585b0a24c07cd075dfb3bffdbf6cdd:tests/popup.test.js:generic-password:3165
+99f1be674ae4da10e3908ebf869c1c030497ee78:tests/popup.test.js:generic-password:3423
