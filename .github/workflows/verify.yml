@@ -70,6 +70,26 @@ jobs:
         with:
           registries: github:metio/toolchains
       - run: npm ci
+      # quint fetches its Rust evaluator through an unauthenticated call to
+      # the GitHub API, which shares the runner's rate limit and fails the
+      # job when that is exhausted. Fetching the same release with the job
+      # token into the directory quint looks in first avoids that call. The
+      # version comes from the installed quint, so an upgrade follows it.
+      - name: Fetch the Quint Rust evaluator
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          VERSION="$(node -p "require('@informalsystems/quint/dist/src/rust/binaryManager.js').QUINT_EVALUATOR_VERSION")"
+          DIR="${HOME}/.quint/rust-evaluator-${VERSION}"
+          ASSET="quint_evaluator-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "${DIR}"
+          gh release download "evaluator/${VERSION}" \
+            --repo quint-co/quint \
+            --pattern "${ASSET}" \
+            --dir "${RUNNER_TEMP}"
+          tar -xzf "${RUNNER_TEMP}/${ASSET}" -C "${DIR}"
+          chmod +x "${DIR}/quint_evaluator"
       - name: Type-check the model
         run: npm run model:typecheck
       - name: Run the model's scenario tests
