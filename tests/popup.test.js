@@ -13,6 +13,7 @@ import {
 import { loadClassicScript } from "./helpers/load-script.js";
 import { makeApiMock } from "./helpers/mock-api.js";
 import { buildPopupDom } from "./helpers/popup-dom.js";
+import { trackRealTimers } from "./helpers/timers.js";
 
 const EXPOSED = [
   "ALL_STORES",
@@ -277,7 +278,12 @@ async function setUp({
 }
 
 describe("popup.js", () => {
+  // A successful fill closes the popup through a timer, which must not
+  // outlive the test that started it.
+  let releaseTimers;
+
   beforeEach(() => {
+    releaseTimers = trackRealTimers();
     delete globalThis.PASEJO;
     delete globalThis.browser;
     delete globalThis.chrome;
@@ -285,6 +291,7 @@ describe("popup.js", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    releaseTimers();
     delete globalThis.PASEJO;
     delete globalThis.browser;
     delete globalThis.chrome;
